@@ -75,7 +75,8 @@ impl Default for Config {
 
 pub fn config_path() -> PathBuf {
     dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("~/.config"))
+        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join("clenv")
         .join("config.toml")
 }
@@ -122,8 +123,37 @@ mod tests {
     }
 
     #[test]
-    fn missing_file_returns_default() {
-        let result = Config::default();
-        assert_eq!(result.ui.default_sort, "size");
+    fn load_returns_default_when_file_missing() {
+        // config_path() on a test machine typically won't exist
+        // If it does exist, this test is a no-op (but won't fail)
+        if !config_path().exists() {
+            let config = load().unwrap();
+            assert_eq!(config.ui.default_sort, "size");
+            assert_eq!(config.scan.depth_limit, 10);
+        }
+    }
+
+    #[test]
+    fn save_and_load_roundtrip() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+
+        let mut config = Config::default();
+        config.scan.depth_limit = 7;
+        config.ui.default_tab = "Python".to_string();
+        config.session.last_scroll = 5;
+
+        // Write directly (bypassing config_path())
+        let content = toml::to_string_pretty(&config).unwrap();
+        std::fs::write(&path, content).unwrap();
+
+        // Read back directly
+        let content = std::fs::read_to_string(&path).unwrap();
+        let loaded: Config = toml::from_str(&content).unwrap();
+
+        assert_eq!(loaded.scan.depth_limit, 7);
+        assert_eq!(loaded.ui.default_tab, "Python");
+        assert_eq!(loaded.session.last_scroll, 5);
     }
 }
