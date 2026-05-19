@@ -21,7 +21,7 @@ impl HitRect {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Tab {
     All,
     Python,
@@ -65,13 +65,9 @@ impl Tab {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn index(&self) -> usize {
-        Self::ALL.iter().position(|t| t == self).unwrap_or(0)
-    }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SortField {
     Size,
     Name,
@@ -79,7 +75,7 @@ pub enum SortField {
     Health,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SortDir {
     Asc,
     Desc,
@@ -113,6 +109,7 @@ impl SortField {
 }
 
 pub struct AppState {
+    pub home_dir: PathBuf,
     pub envs: Vec<Environment>,
     pub active_tab: Tab,
     pub sort_field: SortField,
@@ -157,6 +154,7 @@ impl AppState {
             _ => SortField::Size,
         };
         Self {
+            home_dir: dirs::home_dir().unwrap_or_default(),
             envs,
             active_tab,
             sort_field,
@@ -205,7 +203,7 @@ impl AppState {
                     .iter()
                     .find(|t| **t != tab && !self.hidden_tabs.contains(t))
                 {
-                    self.active_tab = next.clone();
+                    self.active_tab = *next;
                     self.selected = 0;
                     self.scroll_offset = 0;
                 }
@@ -292,7 +290,7 @@ impl AppState {
             return;
         }
         let pos = visible.iter().position(|t| **t == self.active_tab).unwrap_or(0);
-        self.active_tab = visible[(pos + 1) % visible.len()].clone();
+        self.active_tab = *visible[(pos + 1) % visible.len()];
         self.selected = 0;
         self.scroll_offset = 0;
     }
@@ -303,7 +301,7 @@ impl AppState {
             return;
         }
         let pos = visible.iter().position(|t| **t == self.active_tab).unwrap_or(0);
-        self.active_tab = visible[(pos + visible.len() - 1) % visible.len()].clone();
+        self.active_tab = *visible[(pos + visible.len() - 1) % visible.len()];
         self.selected = 0;
         self.scroll_offset = 0;
     }
@@ -340,7 +338,7 @@ impl AppState {
     pub fn set_tab(&mut self, idx: usize) {
         let visible = self.visible_tabs();
         if let Some(tab) = visible.get(idx) {
-            self.active_tab = (*tab).clone();
+            self.active_tab = **tab;
             self.selected = 0;
             self.scroll_offset = 0;
         }
