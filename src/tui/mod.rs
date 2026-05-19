@@ -51,21 +51,27 @@ fn event_loop<B: ratatui::backend::Backend>(
         terminal.draw(|f| ui::render(f, app))?;
 
         if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                match events::handle_key(key, app) {
-                    EventOutcome::Quit => return Ok(None),
-                    EventOutcome::PrintActivation(cmd) => return Ok(Some(cmd)),
-                    EventOutcome::Refresh => {
-                        app.status_message = Some("Scanning…".to_string());
-                        terminal.draw(|f| ui::render(f, app))?;
-                        let new_envs = scanner::scan(&config.scan);
-                        app.envs = new_envs;
-                        app.selected = 0;
-                        app.status_message =
-                            Some(format!("Found {} environments", app.envs.len()));
+            match event::read()? {
+                Event::Key(key) => {
+                    match events::handle_key(key, app) {
+                        EventOutcome::Quit => return Ok(None),
+                        EventOutcome::PrintActivation(cmd) => return Ok(Some(cmd)),
+                        EventOutcome::Refresh => {
+                            app.status_message = Some("Scanning…".to_string());
+                            terminal.draw(|f| ui::render(f, app))?;
+                            let new_envs = scanner::scan(&config.scan);
+                            app.envs = new_envs;
+                            app.selected = 0;
+                            app.status_message =
+                                Some(format!("Found {} environments", app.envs.len()));
+                        }
+                        EventOutcome::Continue => {}
                     }
-                    EventOutcome::Continue => {}
                 }
+                Event::Mouse(mouse) => {
+                    events::handle_mouse(mouse, app);
+                }
+                _ => {}
             }
         }
     }

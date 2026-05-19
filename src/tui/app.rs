@@ -1,7 +1,26 @@
 use crate::env::{EnvKind, Environment, HealthStatus};
+use std::collections::HashSet;
+use std::path::PathBuf;
 use std::time::SystemTime;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default)]
+pub struct HitRect {
+    pub x: u16,
+    pub y: u16,
+    pub width: u16,
+    pub height: u16,
+}
+
+impl HitRect {
+    pub fn contains(&self, col: u16, row: u16) -> bool {
+        col >= self.x
+            && col < self.x.saturating_add(self.width)
+            && row >= self.y
+            && row < self.y.saturating_add(self.height)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Tab {
     All,
     Python,
@@ -45,6 +64,7 @@ impl Tab {
         }
     }
 
+    #[allow(dead_code)]
     pub fn index(&self) -> usize {
         Self::ALL.iter().position(|t| t == self).unwrap_or(0)
     }
@@ -65,6 +85,13 @@ pub enum SortDir {
 }
 
 impl SortField {
+    pub const ALL: &'static [SortField] = &[
+        SortField::Size,
+        SortField::Name,
+        SortField::LastUsed,
+        SortField::Health,
+    ];
+
     pub fn label(&self) -> &'static str {
         match self {
             SortField::Size => "Size",
@@ -90,11 +117,21 @@ pub struct AppState {
     pub sort_field: SortField,
     pub sort_dir: SortDir,
     pub search: String,
+    pub searching: bool,
     pub selected: usize,
     pub scroll_offset: usize,
     pub show_help: bool,
     pub confirm_delete: bool,
     pub status_message: Option<String>,
+    pub expanded_envs: HashSet<PathBuf>,
+    pub tab_rects: Vec<HitRect>,
+    pub sort_rects: Vec<HitRect>,
+    pub visible_rows: usize,
+    pub hidden_tabs: HashSet<Tab>,
+    pub show_tab_manager: bool,
+    pub tab_manager_cursor: usize,
+    pub tab_manager_rect: HitRect,
+    pub tab_manager_item_rects: Vec<HitRect>,
 }
 
 impl AppState {
@@ -121,11 +158,52 @@ impl AppState {
             sort_field,
             sort_dir: SortDir::Desc,
             search: String::new(),
+            searching: false,
             selected: 0,
             scroll_offset: 0,
             show_help: false,
             confirm_delete: false,
             status_message: None,
+            expanded_envs: HashSet::new(),
+            tab_rects: Vec::new(),
+            sort_rects: Vec::new(),
+            visible_rows: 20,
+            hidden_tabs: HashSet::new(),
+            show_tab_manager: false,
+            tab_manager_cursor: 0,
+            tab_manager_rect: HitRect::default(),
+            tab_manager_item_rects: Vec::new(),
+        }
+    }
+
+    pub fn visible_tabs(&self) -> Vec<&Tab> {
+        Tab::ALL
+            .iter()
+            .filter(|t| !self.hidden_tabs.contains(*t))
+            .collect()
+    }
+
+    /// Toggle a tab's visibility. Refuses to hide the last visible tab.
+    pub fn toggle_tab_visibility(&mut self, tab: Tab) {
+        if self.hidden_tabs.contains(&tab) {
+            self.hidden_tabs.remove(&tab);
+        } else {
+            let visible_count = Tab::ALL.len() - self.hidden_tabs.len();
+            if visible_count <= 1 {
+                return;
+            }
+            // If we're hiding the active tab, switch away first
+            if self.active_tab == tab {
+                if let Some(next) = Tab::ALL
+                    .iter()
+                    .find(|t| **t != tab && !self.hidden_tabs.contains(t))
+                {
+                    self.active_tab = next.clone();
+                    self.selected = 0;
+                    self.scroll_offset = 0;
+                }
+            }
+            self.hidden_tabs.insert(tab);
         }
     }
 
@@ -180,7 +258,7 @@ impl AppState {
         if self.selected > 0 {
             self.selected -= 1;
         }
-        self.clamp_scroll(20);
+        self.clamp_scroll();
     }
 
     pub fn move_down(&mut self) {
@@ -188,28 +266,37 @@ impl AppState {
         if self.selected + 1 < count {
             self.selected += 1;
         }
-        self.clamp_scroll(20);
+        self.clamp_scroll();
     }
 
-    pub fn clamp_scroll(&mut self, visible_rows: usize) {
+    pub fn clamp_scroll(&mut self) {
+        let visible = self.visible_rows.max(1);
         if self.selected < self.scroll_offset {
             self.scroll_offset = self.selected;
         }
-        if self.selected >= self.scroll_offset + visible_rows {
-            self.scroll_offset = self.selected + 1 - visible_rows;
+        if self.selected >= self.scroll_offset + visible {
+            self.scroll_offset = self.selected + 1 - visible;
         }
     }
 
     pub fn next_tab(&mut self) {
-        let idx = self.active_tab.index();
-        self.active_tab = Tab::ALL[(idx + 1) % Tab::ALL.len()].clone();
+        let visible = self.visible_tabs();
+        if visible.is_empty() {
+            return;
+        }
+        let pos = visible.iter().position(|t| **t == self.active_tab).unwrap_or(0);
+        self.active_tab = visible[(pos + 1) % visible.len()].clone();
         self.selected = 0;
         self.scroll_offset = 0;
     }
 
     pub fn prev_tab(&mut self) {
-        let idx = self.active_tab.index();
-        self.active_tab = Tab::ALL[(idx + Tab::ALL.len() - 1) % Tab::ALL.len()].clone();
+        let visible = self.visible_tabs();
+        if visible.is_empty() {
+            return;
+        }
+        let pos = visible.iter().position(|t| **t == self.active_tab).unwrap_or(0);
+        self.active_tab = visible[(pos + visible.len() - 1) % visible.len()].clone();
         self.selected = 0;
         self.scroll_offset = 0;
     }
@@ -225,6 +312,42 @@ impl AppState {
             };
         }
         self.sort_field = next;
+    }
+
+    /// Click a sort field: same field → toggle direction, different field → switch.
+    pub fn set_sort(&mut self, field: SortField) {
+        if self.sort_field == field {
+            self.sort_dir = if self.sort_dir == SortDir::Asc {
+                SortDir::Desc
+            } else {
+                SortDir::Asc
+            };
+        } else {
+            self.sort_field = field;
+        }
+        self.selected = 0;
+        self.scroll_offset = 0;
+    }
+
+    /// `idx` indexes into the currently visible tabs (matches tab_rects order).
+    pub fn set_tab(&mut self, idx: usize) {
+        let visible = self.visible_tabs();
+        if let Some(tab) = visible.get(idx) {
+            self.active_tab = (*tab).clone();
+            self.selected = 0;
+            self.scroll_offset = 0;
+        }
+    }
+
+    pub fn toggle_expand(&mut self) {
+        if let Some(env) = self.selected_env() {
+            let path = env.path.clone();
+            if self.expanded_envs.contains(&path) {
+                self.expanded_envs.remove(&path);
+            } else {
+                self.expanded_envs.insert(path);
+            }
+        }
     }
 }
 

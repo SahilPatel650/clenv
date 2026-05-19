@@ -1,4 +1,5 @@
 pub mod conda;
+pub mod mamba;
 pub mod nvm;
 pub mod pyenv;
 pub mod rbenv;
@@ -23,6 +24,7 @@ pub fn discover_all() -> Vec<Environment> {
     let mut results: Vec<Environment> = vec![];
 
     results.extend(pairs_to_envs(conda::discover(), EnvKind::Conda));
+    results.extend(pairs_to_envs(mamba::discover(), EnvKind::Conda));
     results.extend(pairs_to_envs(pyenv::discover(), EnvKind::Python));
     results.extend(pairs_to_envs(rbenv::discover(), EnvKind::Ruby));
     results.extend(pairs_to_envs(sdkman::discover(), EnvKind::Java));
