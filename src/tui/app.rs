@@ -94,7 +94,6 @@ pub struct AppState {
     pub scroll_offset: usize,
     pub show_help: bool,
     pub confirm_delete: bool,
-    pub pending_activation: Option<String>,
     pub status_message: Option<String>,
 }
 
@@ -126,7 +125,6 @@ impl AppState {
             scroll_offset: 0,
             show_help: false,
             confirm_delete: false,
-            pending_activation: None,
             status_message: None,
         }
     }
@@ -217,7 +215,16 @@ impl AppState {
     }
 
     pub fn cycle_sort(&mut self) {
-        self.sort_field = self.sort_field.next();
+        let next = self.sort_field.next();
+        // When the field wraps back to Size, toggle direction
+        if next == SortField::Size {
+            self.sort_dir = if self.sort_dir == SortDir::Asc {
+                SortDir::Desc
+            } else {
+                SortDir::Asc
+            };
+        }
+        self.sort_field = next;
     }
 }
 
@@ -286,5 +293,18 @@ mod tests {
         app.active_tab = Tab::Java; // last tab
         app.next_tab();
         assert_eq!(app.active_tab, Tab::All);
+    }
+
+    #[test]
+    fn cycle_sort_toggles_direction_on_wrap() {
+        let mut app = AppState::new(vec![], "All", "size");
+        assert_eq!(app.sort_dir, SortDir::Desc);
+        // cycle through all 4 fields back to Size
+        app.cycle_sort(); // Name
+        app.cycle_sort(); // LastUsed
+        app.cycle_sort(); // Health
+        app.cycle_sort(); // Size — wraps, toggles to Asc
+        assert_eq!(app.sort_dir, SortDir::Asc);
+        assert_eq!(app.sort_field, SortField::Size);
     }
 }
