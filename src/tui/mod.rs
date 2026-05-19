@@ -3,6 +3,7 @@ pub mod events;
 pub mod onboarding;
 pub mod ui;
 
+use crate::actions;
 use crate::config::Config;
 use crate::env::Environment;
 use crate::scanner;
@@ -14,6 +15,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use events::EventOutcome;
+use humansize::{format_size, BINARY};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::{io, sync::mpsc, time::Duration};
 
@@ -93,6 +95,61 @@ fn event_loop<B: ratatui::backend::Backend>(
                             app.selected = 0;
                             app.status_message =
                                 Some(format!("Found {} environments", app.envs.len()));
+                        }
+                        EventOutcome::DeleteConfirmed => {
+                            if let Some(env) = app.selected_env().cloned() {
+                                let streams = actions::delete_streams_output(&env);
+                                if streams {
+                                    // Suspend TUI so the manager's output flows to the terminal
+                                    let _ = disable_raw_mode();
+                                    let mut stdout = io::stdout();
+                                    let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture);
+                                    let _ = terminal.show_cursor();
+                                    println!("\r\n  Running: {}\r\n", actions::delete_preview(&env));
+                                }
+
+                                match actions::delete_env(&env) {
+                                    Ok(freed) => {
+                                        let msg = format!(
+                                            "Deleted {} — freed {}",
+                                            env.name,
+                                            format_size(freed, BINARY)
+                                        );
+                                        if streams {
+                                            println!("\r\n  ✓ {msg}\r\n");
+                                        }
+                                        app.envs.retain(|e| e.path != env.path);
+                                        if app.selected > 0 {
+                                            app.selected -= 1;
+                                        }
+                                        app.status_message = Some(msg);
+                                    }
+                                    Err(e) => {
+                                        let msg = format!("Error: {e}");
+                                        if streams {
+                                            eprintln!("\r\n  ✗ {msg}\r\n");
+                                        }
+                                        app.status_message = Some(msg);
+                                    }
+                                }
+
+                                if streams {
+                                    println!("  Press any key to return…\r");
+                                    // Read one keypress before resuming the TUI
+                                    let _ = enable_raw_mode();
+                                    loop {
+                                        if event::poll(Duration::from_secs(60))? {
+                                            if let Event::Key(_) = event::read()? {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    let mut stdout = io::stdout();
+                                    let _ = execute!(stdout, EnterAlternateScreen, EnableMouseCapture);
+                                    terminal.clear()?;
+                                }
+                            }
+                            app.confirm_delete = false;
                         }
                         EventOutcome::Continue => {}
                     }

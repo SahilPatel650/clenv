@@ -1,16 +1,19 @@
+use crate::env::EnvSource;
 use std::path::PathBuf;
 
 // mamba and micromamba use the same output format as `conda env list`
-pub fn discover() -> Vec<(String, PathBuf)> {
-    let mut results: Vec<(String, PathBuf)> = Vec::new();
-    for cmd in &["mamba", "micromamba"] {
+pub fn discover_tagged() -> Vec<(String, PathBuf, EnvSource)> {
+    let mut results: Vec<(String, PathBuf, EnvSource)> = Vec::new();
+    for (cmd, source) in &[("mamba", EnvSource::Mamba), ("micromamba", EnvSource::Micromamba)] {
         if let Ok(output) = std::process::Command::new(cmd)
             .args(["env", "list"])
             .output()
         {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                results.extend(super::conda::parse_output(&stdout));
+                for (name, path) in super::conda::parse_output(&stdout) {
+                    results.push((name, path, *source));
+                }
             }
         }
     }

@@ -101,7 +101,23 @@ fn version_for(env: &Environment) -> Option<String> {
             let v = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if v.is_empty() { None } else { Some(v) }
         }
-        EnvKind::Conda | EnvKind::Ruby | EnvKind::Java => {
+        EnvKind::Conda => {
+            // Conda env names are arbitrary; run the bundled Python to get the real version.
+            for bin in &["python", "python3"] {
+                let python = env.path.join("bin").join(bin);
+                if let Ok(out) = std::process::Command::new(&python).arg("--version").output() {
+                    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                    let s2 = String::from_utf8_lossy(&out.stderr).trim().to_string();
+                    let v = if s.is_empty() { s2 } else { s };
+                    if !v.is_empty() {
+                        return Some(v);
+                    }
+                }
+            }
+            None
+        }
+        EnvKind::Ruby | EnvKind::Java => {
+            // For rbenv/sdkman the name IS the version (e.g. "3.2.2", "21.0.2-tem").
             if !env.name.is_empty() { Some(env.name.clone()) } else { None }
         }
         EnvKind::Cargo => {

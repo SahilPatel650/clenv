@@ -8,6 +8,7 @@ pub enum EventOutcome {
     Quit,
     PrintActivation(String),
     Refresh,
+    DeleteConfirmed,
 }
 
 pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
@@ -17,29 +18,7 @@ pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
 
     if app.confirm_delete {
         return match key.code {
-            KeyCode::Char('y') | KeyCode::Char('Y') => {
-                if let Some(env) = app.selected_env() {
-                    let env = env.clone();
-                    match actions::delete_env(&env) {
-                        Ok(freed) => {
-                            app.envs.retain(|e| e.path != env.path);
-                            app.status_message = Some(format!(
-                                "Deleted {} — freed {}",
-                                env.name,
-                                format_size(freed, BINARY)
-                            ));
-                            if app.selected > 0 {
-                                app.selected -= 1;
-                            }
-                        }
-                        Err(e) => {
-                            app.status_message = Some(format!("Error: {e}"));
-                        }
-                    }
-                }
-                app.confirm_delete = false;
-                EventOutcome::Continue
-            }
+            KeyCode::Char('y') | KeyCode::Char('Y') => EventOutcome::DeleteConfirmed,
             _ => {
                 app.confirm_delete = false;
                 app.status_message = Some("Delete cancelled".to_string());

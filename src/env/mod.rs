@@ -5,6 +5,20 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+/// How an environment was discovered — determines which deletion strategy to use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum EnvSource {
+    #[default]
+    Filesystem,
+    Conda,
+    Mamba,
+    Micromamba,
+    Pyenv,
+    Rbenv,
+    Nvm,
+    Sdkman,
+}
+
 /// Serialize Option<SystemTime> as Option<u64> (seconds since UNIX epoch).
 mod serde_opt_system_time {
     use serde::{Deserialize, Deserializer, Serializer};
@@ -93,6 +107,8 @@ pub struct Environment {
     pub health: HealthStatus,
     pub activation_cmd: Option<String>,
     pub cache_paths: Vec<PathBuf>,
+    #[serde(default)]
+    pub source: EnvSource,
 }
 
 impl Environment {
@@ -113,6 +129,7 @@ impl Environment {
             health: HealthStatus::Unknown,
             activation_cmd: None,
             cache_paths: vec![],
+            source: EnvSource::Filesystem,
         }
     }
 }

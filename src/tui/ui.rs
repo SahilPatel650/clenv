@@ -1,3 +1,4 @@
+use crate::actions;
 use crate::env::HealthStatus;
 use crate::tui::app::{AppState, HitRect, SortDir, SortField, Tab};
 use crate::tui::onboarding::OnboardingField;
@@ -617,19 +618,37 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
 }
 
 fn render_confirm_dialog(frame: &mut Frame, app: &AppState, area: Rect) {
-    let popup_area = centered_rect(50, 20, area);
+    let popup_area = centered_rect(60, 30, area);
     frame.render_widget(Clear, popup_area);
-    let size_str = app
+
+    let (size_str, cmd) = app
         .selected_env()
-        .map(|e| format_size(e.size_bytes, BINARY))
+        .map(|e| (format_size(e.size_bytes, BINARY), actions::delete_preview(e)))
         .unwrap_or_default();
+
+    let streams = app
+        .selected_env()
+        .map(|e| actions::delete_streams_output(e))
+        .unwrap_or(false);
+
+    let output_note = if streams {
+        "  Command output will be shown in the terminal."
+    } else {
+        "  Directory will be removed immediately."
+    };
+
     let text = vec![
         Line::from(""),
-        Line::from(format!(
-            "  Delete this environment? ({size_str} will be freed)"
-        )),
+        Line::from(format!("  Delete this environment? ({size_str} will be freed)")),
         Line::from(""),
-        Line::from("  [y] Yes   [n] No"),
+        Line::from(vec![
+            Span::raw("  Command: "),
+            Span::styled(cmd, Style::default().fg(Color::Yellow)),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(output_note, Style::default().fg(Color::DarkGray))),
+        Line::from(""),
+        Line::from("  [y] Yes   [n / Esc] No"),
     ];
     let block = Block::default()
         .borders(Borders::ALL)
