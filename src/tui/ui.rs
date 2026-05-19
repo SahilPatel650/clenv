@@ -126,7 +126,7 @@ fn render_sort_bar(frame: &mut Frame, app: &AppState, area: Rect) {
 
 fn render_table(frame: &mut Frame, app: &AppState, area: Rect) {
     let filtered = app.filtered_envs();
-    let visible_start = app.scroll_offset;
+    let visible_start = app.scroll_offset.min(filtered.len());
     let visible_end = (visible_start + area.height as usize).min(filtered.len());
 
     let header = Row::new(vec![
