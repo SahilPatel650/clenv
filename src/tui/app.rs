@@ -1,4 +1,5 @@
 use crate::env::{EnvKind, Environment, HealthStatus};
+use super::onboarding::{OnboardingResult, OnboardingState};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::SystemTime;
@@ -132,6 +133,9 @@ pub struct AppState {
     pub tab_manager_cursor: usize,
     pub tab_manager_rect: HitRect,
     pub tab_manager_item_rects: Vec<HitRect>,
+    pub rescanning: bool,
+    pub onboarding: Option<OnboardingState>,
+    pub onboarding_result: Option<OnboardingResult>,
 }
 
 impl AppState {
@@ -173,6 +177,9 @@ impl AppState {
             tab_manager_cursor: 0,
             tab_manager_rect: HitRect::default(),
             tab_manager_item_rects: Vec::new(),
+            rescanning: false,
+            onboarding: None,
+            onboarding_result: None,
         }
     }
 
@@ -337,6 +344,28 @@ impl AppState {
             self.selected = 0;
             self.scroll_offset = 0;
         }
+    }
+
+    /// Replace env list after a background rescan, preserving selection and scroll.
+    pub fn update_envs(&mut self, new_envs: Vec<Environment>) {
+        let selected_path = self.selected_env().map(|e| e.path.clone());
+        self.envs = new_envs;
+        // Prune expanded set to paths that still exist
+        let paths: HashSet<PathBuf> = self.envs.iter().map(|e| e.path.clone()).collect();
+        self.expanded_envs.retain(|p| paths.contains(p));
+        // Try to restore selection by path
+        if let Some(path) = selected_path {
+            let filtered = self.filtered_envs();
+            if let Some(idx) = filtered.iter().position(|e| e.path == path) {
+                self.selected = idx;
+            } else {
+                self.selected = self.selected.min(filtered.len().saturating_sub(1));
+            }
+        }
+        self.clamp_scroll();
+        let count = self.envs.len();
+        self.status_message = Some(format!("Refreshed — {count} environments"));
+        self.rescanning = false;
     }
 
     pub fn toggle_expand(&mut self) {

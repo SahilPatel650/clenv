@@ -1,5 +1,6 @@
 use crate::env::HealthStatus;
 use crate::tui::app::{AppState, HitRect, SortDir, SortField, Tab};
+use crate::tui::onboarding::OnboardingField;
 use humansize::{format_size, BINARY};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -76,7 +77,9 @@ pub fn render(frame: &mut Frame, app: &mut AppState) {
     render_detail(frame, app, chunks[3]);
     render_status_bar(frame, app, chunks[4]);
 
-    if app.show_tab_manager {
+    if app.onboarding.is_some() {
+        render_onboarding_overlay(frame, app, area);
+    } else if app.show_tab_manager {
         render_tab_manager_overlay(frame, app, area);
     }
     if app.show_help {
@@ -117,10 +120,10 @@ fn render_tabs(frame: &mut Frame, app: &mut AppState, area: Rect) {
 
         let style = if **tab == app.active_tab {
             Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
         } else {
-            Style::default().fg(Color::White)
+            Style::default()
         };
 
         tab_rects.push(HitRect {
@@ -133,7 +136,7 @@ fn render_tabs(frame: &mut Frame, app: &mut AppState, area: Rect) {
         x += label_width;
 
         if i < visible.len() - 1 {
-            spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::raw("│"));
             x += 1;
         }
     }
@@ -153,10 +156,10 @@ fn render_tabs(frame: &mut Frame, app: &mut AppState, area: Rect) {
     let mgr_x = inner.x + inner.width.saturating_sub(mgr_width);
     let mgr_style = if app.show_tab_manager {
         Style::default()
-            .fg(Color::Cyan)
+            .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default()
     };
     app.tab_manager_rect = HitRect {
         x: mgr_x,
@@ -191,7 +194,7 @@ fn render_sort_bar(frame: &mut Frame, app: &mut AppState, area: Rect) {
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(Color::DarkGray)
+            Style::default()
         };
 
         sort_rects.push(HitRect {
@@ -211,7 +214,7 @@ fn render_sort_bar(frame: &mut Frame, app: &mut AppState, area: Rect) {
             Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
         )
     } else if app.search.is_empty() {
-        Span::styled("/ to search", Style::default().fg(Color::DarkGray))
+        Span::raw("/ to search")
     } else {
         Span::styled(
             format!("Search: {}", app.search),
@@ -260,7 +263,7 @@ fn render_table(frame: &mut Frame, app: &mut AppState, area: Rect) {
         let path_str = abbreviated_path(&env.path);
 
         let row_style = if is_selected {
-            Style::default().bg(Color::DarkGray)
+            Style::default().add_modifier(Modifier::REVERSED)
         } else {
             Style::default()
         };
@@ -300,7 +303,7 @@ fn render_table(frame: &mut Frame, app: &mut AppState, area: Rect) {
                     }),
                     Cell::from(""),
                 ])
-                .style(Style::default().fg(Color::DarkGray)),
+                .style(Style::default().fg(Color::Cyan)),
             );
             row_count += 1;
         }
@@ -348,28 +351,28 @@ fn render_detail(frame: &mut Frame, app: &AppState, area: Rect) {
 
     let text = vec![
         Line::from(vec![
-            Span::styled("Path:     ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Path:     ", Style::default().fg(Color::Cyan)),
             Span::raw(path_str),
         ]),
         Line::from(vec![
-            Span::styled("Packages: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Packages: ", Style::default().fg(Color::Cyan)),
             Span::raw(packages),
             Span::raw("    "),
-            Span::styled("Last used: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Last used: ", Style::default().fg(Color::Cyan)),
             Span::raw(last_used),
             Span::raw("    "),
-            Span::styled("Cache: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Cache: ", Style::default().fg(Color::Cyan)),
             Span::raw(cache),
         ]),
         Line::from(vec![
-            Span::styled("Health:   ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Health:   ", Style::default().fg(Color::Cyan)),
             Span::styled(
                 health_display,
                 Style::default().fg(health_color(&env.health)),
             ),
         ]),
         Line::from(vec![
-            Span::styled("Activate: ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Activate: ", Style::default().fg(Color::Cyan)),
             Span::raw(activation),
         ]),
     ];
@@ -380,11 +383,16 @@ fn render_detail(frame: &mut Frame, app: &AppState, area: Rect) {
 fn render_status_bar(frame: &mut Frame, app: &AppState, area: Rect) {
     let msg = if app.searching {
         Span::styled(
-            "[Esc] exit search  [Space] expand/collapse  [↑↓] navigate  [Backspace] delete char",
+            "[Esc] exit search  [↑↓] navigate  [Backspace] delete char",
             Style::default().fg(Color::Cyan),
         )
     } else if let Some(status) = &app.status_message {
         Span::styled(status.as_str(), Style::default().fg(Color::Green))
+    } else if app.rescanning {
+        Span::styled(
+            "Scanning in background…",
+            Style::default().fg(Color::Yellow),
+        )
     } else if app.show_tab_manager {
         Span::styled(
             "[↑↓] navigate  [Space/Enter] toggle  [Esc] close tab manager",
@@ -396,6 +404,131 @@ fn render_status_bar(frame: &mut Frame, app: &AppState, area: Rect) {
         )
     };
     frame.render_widget(Paragraph::new(Line::from(msg)), area);
+}
+
+fn render_onboarding_overlay(frame: &mut Frame, app: &AppState, area: Rect) {
+    let Some(ob) = &app.onboarding else { return };
+
+    // Compute popup height based on visible completions
+    let comp_roots = if ob.field == OnboardingField::Roots { ob.completions.len().min(5) as u16 } else { 0 };
+    let comp_ignore = if ob.field == OnboardingField::Ignore { ob.completions.len().min(5) as u16 } else { 0 };
+    let inner_h = 14 + comp_roots + comp_ignore; // static lines + completions
+    let height = (inner_h + 2).min(area.height.saturating_sub(2)).max(14);
+    let width = 72_u16.min(area.width.saturating_sub(4)).max(40);
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let popup_area = Rect { x, y, width, height };
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(
+            " clenv — First-Run Setup ",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ))
+        .style(Style::default().bg(Color::Black).fg(Color::White));
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let pad = "  ";
+    let mut lines: Vec<Line> = Vec::new();
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("{pad}Welcome! Configure clenv and press Enter to save."),
+        Style::default().fg(Color::White),
+    )));
+    lines.push(Line::from(""));
+
+    // ── Scan Roots field ─────────────────────────────────────────────────────
+    let roots_active = ob.field == OnboardingField::Roots;
+    lines.push(onboarding_label("Scan Roots", "(comma-separated paths)", roots_active));
+    lines.push(onboarding_input(&ob.roots_input, roots_active));
+    if roots_active {
+        for (i, comp) in ob.completions.iter().take(5).enumerate() {
+            lines.push(onboarding_completion(comp, i == ob.completion_idx));
+        }
+    }
+    lines.push(Line::from(""));
+
+    // ── Max Depth field ───────────────────────────────────────────────────────
+    let depth_active = ob.field == OnboardingField::DepthLimit;
+    lines.push(onboarding_label("Max Scan Depth", "(number of directory levels)", depth_active));
+    lines.push(onboarding_input(&ob.depth_input, depth_active));
+    lines.push(Line::from(""));
+
+    // ── Ignore Paths field ────────────────────────────────────────────────────
+    let ignore_active = ob.field == OnboardingField::Ignore;
+    lines.push(onboarding_label("Ignore Paths", "(comma-separated, blank to skip)", ignore_active));
+    let ignore_display = if ob.ignore_input.is_empty() && !ignore_active {
+        "(empty)".to_string()
+    } else {
+        ob.ignore_input.clone()
+    };
+    lines.push(onboarding_input(&ignore_display, ignore_active));
+    if ignore_active {
+        for (i, comp) in ob.completions.iter().take(5).enumerate() {
+            lines.push(onboarding_completion(comp, i == ob.completion_idx));
+        }
+    }
+    lines.push(Line::from(""));
+
+    // ── Hint bar ─────────────────────────────────────────────────────────────
+    lines.push(Line::from(Span::styled(
+        format!("{pad}[Tab/↑↓] completions  [Enter] next  [Shift+Tab] prev  [Esc] skip"),
+        Style::default().fg(Color::Cyan),
+    )));
+
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn onboarding_label<'a>(label: &'static str, hint: &'static str, active: bool) -> Line<'a> {
+    if active {
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(label, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::raw(" "),
+            Span::styled(hint, Style::default().fg(Color::White)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::raw("  "),
+            Span::styled(label, Style::default().fg(Color::White)),
+            Span::raw(" "),
+            Span::styled(hint, Style::default()),
+        ])
+    }
+}
+
+fn onboarding_input(value: &str, active: bool) -> Line<'static> {
+    let owned = value.to_string();
+    if active {
+        Line::from(vec![
+            Span::styled("  ▶ ", Style::default().fg(Color::Cyan)),
+            Span::styled(owned, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+            Span::styled("█", Style::default().fg(Color::Cyan)),
+        ])
+    } else {
+        let style = if value.is_empty() || value == "(empty)" {
+            Style::default()
+        } else {
+            Style::default().fg(Color::White)
+        };
+        Line::from(vec![Span::raw("    "), Span::styled(owned, style)])
+    }
+}
+
+fn onboarding_completion(comp: &str, selected: bool) -> Line<'static> {
+    let owned = format!("    {comp}");
+    if selected {
+        Line::from(Span::styled(
+            owned,
+            Style::default().add_modifier(Modifier::REVERSED),
+        ))
+    } else {
+        Line::from(Span::styled(owned, Style::default()))
+    }
 }
 
 fn render_tab_manager_overlay(frame: &mut Frame, app: &mut AppState, area: Rect) {
@@ -436,12 +569,9 @@ fn render_tab_manager_overlay(frame: &mut Frame, app: &mut AppState, area: Rect)
         });
 
         let style = if is_cursor {
-            Style::default()
-                .bg(Color::DarkGray)
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
+            Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
         } else if is_hidden {
-            Style::default().fg(Color::DarkGray)
+            Style::default()
         } else {
             Style::default().fg(Color::White)
         };
@@ -470,7 +600,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         Line::from("  s                 Cycle sort field"),
         Line::from("  Click sort label  Set sort / toggle direction"),
         Line::from("  /                 Enter search mode"),
-        Line::from("  Space (search)    Expand / collapse env details"),
+        Line::from("  Space              Expand / collapse env details"),
         Line::from("  Esc (search)      Exit search, clear query"),
         Line::from("  d                 Delete selected env"),
         Line::from("  c                 Clear cache"),

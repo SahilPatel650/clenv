@@ -11,6 +11,10 @@ pub enum EventOutcome {
 }
 
 pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
+    if app.onboarding.is_some() {
+        return handle_onboarding_key(key, app);
+    }
+
     if app.confirm_delete {
         return match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
@@ -96,6 +100,11 @@ pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
             EventOutcome::Continue
         }
 
+        KeyCode::Char(' ') => {
+            app.toggle_expand();
+            EventOutcome::Continue
+        }
+
         KeyCode::Esc => {
             app.status_message = None;
             EventOutcome::Continue
@@ -169,6 +178,57 @@ pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
     }
 }
 
+fn handle_onboarding_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
+    match key.code {
+        KeyCode::Esc => {
+            // Dismiss without saving — use whatever config was loaded
+            app.onboarding = None;
+        }
+        KeyCode::Enter => {
+            let confirmed = app.onboarding.as_mut().unwrap().advance();
+            if confirmed {
+                let result = app.onboarding.as_ref().unwrap().build_result();
+                app.onboarding = None;
+                app.onboarding_result = Some(result);
+            }
+        }
+        KeyCode::Tab => {
+            let ob = app.onboarding.as_mut().unwrap();
+            if !ob.completions.is_empty() {
+                ob.accept_completion();
+            } else {
+                let confirmed = ob.advance();
+                if confirmed {
+                    let result = app.onboarding.as_ref().unwrap().build_result();
+                    app.onboarding = None;
+                    app.onboarding_result = Some(result);
+                }
+            }
+        }
+        KeyCode::BackTab => {
+            app.onboarding.as_mut().unwrap().retreat();
+        }
+        KeyCode::Up => {
+            app.onboarding.as_mut().unwrap().completion_up();
+        }
+        KeyCode::Down => {
+            app.onboarding.as_mut().unwrap().completion_down();
+        }
+        KeyCode::Backspace => {
+            let ob = app.onboarding.as_mut().unwrap();
+            ob.active_input_mut().pop();
+            ob.refresh_completions();
+        }
+        KeyCode::Char(c) => {
+            let ob = app.onboarding.as_mut().unwrap();
+            ob.active_input_mut().push(c);
+            ob.refresh_completions();
+        }
+        _ => {}
+    }
+    EventOutcome::Continue
+}
+
 fn handle_search_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
     match key.code {
         KeyCode::Esc => {
@@ -181,10 +241,6 @@ fn handle_search_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
         KeyCode::Backspace => {
             app.search.pop();
             app.selected = 0;
-            EventOutcome::Continue
-        }
-        KeyCode::Char(' ') => {
-            app.toggle_expand();
             EventOutcome::Continue
         }
         KeyCode::Up | KeyCode::Char('k') => {
@@ -384,13 +440,22 @@ mod tests {
     }
 
     #[test]
-    fn space_in_search_mode_toggles_expand() {
+    fn space_in_command_mode_toggles_expand() {
         let mut app = make_app(vec![make_env("myenv")]);
-        app.searching = true;
         assert!(app.expanded_envs.is_empty());
         handle_key(key(KeyCode::Char(' ')), &mut app);
         assert_eq!(app.expanded_envs.len(), 1);
         handle_key(key(KeyCode::Char(' ')), &mut app);
         assert!(app.expanded_envs.is_empty());
+    }
+
+    #[test]
+    fn space_in_search_mode_types_space() {
+        let mut app = make_app(vec![make_env("myenv")]);
+        app.searching = true;
+        handle_key(key(KeyCode::Char('h')), &mut app);
+        handle_key(key(KeyCode::Char(' ')), &mut app);
+        handle_key(key(KeyCode::Char('w')), &mut app);
+        assert_eq!(app.search, "h w");
     }
 }
