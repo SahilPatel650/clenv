@@ -48,9 +48,8 @@ fn sort_label(field: &SortField, active: &SortField, dir: &SortDir) -> String {
     format!("[{}{}]", field.label(), arrow)
 }
 
-fn abbreviated_path(path: &Path) -> String {
-    let home = dirs::home_dir().unwrap_or_default();
-    if let Ok(rel) = path.strip_prefix(&home) {
+fn abbreviated_path(path: &Path, home: &Path) -> String {
+    if let Ok(rel) = path.strip_prefix(home) {
         format!("~/{}", rel.display())
     } else {
         path.to_string_lossy().to_string()
@@ -260,7 +259,7 @@ fn render_table(frame: &mut Frame, app: &mut AppState, area: Rect) {
         let expand_marker = if is_expanded { "▾" } else { " " };
         let size_str = format_size(env.size_bytes, BINARY);
         let version_str = env.version.as_deref().unwrap_or("—").to_string();
-        let path_str = abbreviated_path(&env.path);
+        let path_str = abbreviated_path(&env.path, &app.home_dir);
 
         let row_style = if is_selected {
             Style::default().add_modifier(Modifier::REVERSED)
@@ -333,7 +332,7 @@ fn render_detail(frame: &mut Frame, app: &AppState, area: Rect) {
     };
 
     let block = block.title(format!(" {} ", env.name));
-    let path_str = abbreviated_path(&env.path);
+    let path_str = abbreviated_path(&env.path, &app.home_dir);
 
     let packages = env
         .package_count

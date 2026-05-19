@@ -10,10 +10,11 @@ use walkdir::WalkDir;
 
 /// Run a full scan: fs walk + manager discovery, with metrics and health computed.
 pub fn scan(config: &ScanConfig) -> Vec<Environment> {
-    // Phase 1: collect (path, kind) from parallel fs walk across all roots
+    // Phase 1: collect (path, kind) from fs walk across all roots.
+    // Sequential here — roots are typically 1–3, so rayon overhead exceeds benefit.
     let mut detected: Vec<(PathBuf, EnvKind)> = config
         .roots
-        .par_iter()
+        .iter()
         .flat_map(|root| walk_root(root, &config.ignore, config.depth_limit))
         .collect();
 

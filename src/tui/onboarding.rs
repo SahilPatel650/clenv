@@ -110,12 +110,12 @@ impl OnboardingState {
         if self.completions.is_empty() {
             return;
         }
-        let comp = self.completions[self.completion_idx].clone();
+        let comp = self.completions[self.completion_idx].trim_end_matches('/').to_string();
         let input = self.active_input_mut();
         let new_val = if let Some(comma) = input.rfind(',') {
-            format!("{}, {}/", input[..comma].trim_end(), comp.trim_end_matches('/'))
+            format!("{}, {}/", input[..comma].trim_end(), comp)
         } else {
-            format!("{}/", comp.trim_end_matches('/'))
+            format!("{}/", comp)
         };
         *input = new_val;
         self.refresh_completions();

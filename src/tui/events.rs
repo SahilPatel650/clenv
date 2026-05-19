@@ -279,7 +279,7 @@ fn handle_tab_manager_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
         }
         KeyCode::Char(' ') | KeyCode::Enter => {
             if let Some(tab) = Tab::ALL.get(app.tab_manager_cursor) {
-                app.toggle_tab_visibility(tab.clone());
+                app.toggle_tab_visibility(*tab);
             }
         }
         _ => {}
@@ -304,7 +304,7 @@ pub fn handle_mouse(mouse: MouseEvent, app: &mut AppState) -> EventOutcome {
                     if rect.contains(col, row) {
                         app.tab_manager_cursor = i;
                         if let Some(tab) = Tab::ALL.get(i) {
-                            app.toggle_tab_visibility(tab.clone());
+                            app.toggle_tab_visibility(*tab);
                         }
                         return EventOutcome::Continue;
                     }
@@ -322,7 +322,7 @@ pub fn handle_mouse(mouse: MouseEvent, app: &mut AppState) -> EventOutcome {
             for (i, rect) in app.sort_rects.iter().enumerate() {
                 if rect.contains(col, row) {
                     if let Some(field) = SortField::ALL.get(i) {
-                        app.set_sort(field.clone());
+                        app.set_sort(*field);
                     }
                     return EventOutcome::Continue;
                 }
