@@ -1,3 +1,5 @@
+pub mod cache;
+
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -74,11 +76,15 @@ impl Default for Config {
 }
 
 pub fn config_path() -> PathBuf {
-    dirs::config_dir()
-        .or_else(|| dirs::home_dir().map(|h| h.join(".config")))
+    dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join(".config")
         .join("clenv")
         .join("config.toml")
+}
+
+pub fn is_first_run() -> bool {
+    !config_path().exists()
 }
 
 pub fn load() -> Result<Config> {

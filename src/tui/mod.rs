@@ -1,5 +1,6 @@
 pub mod app;
 pub mod events;
+pub mod onboarding;
 pub mod ui;
 
 use crate::config::Config;
@@ -14,16 +15,34 @@ use crossterm::{
 };
 use events::EventOutcome;
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::{io, time::Duration};
+use std::{io, sync::mpsc, time::Duration};
 
 /// Run the TUI. Returns (activation_cmd, final app state).
-pub fn run(envs: Vec<Environment>, config: &Config) -> Result<(Option<String>, AppState)> {
+///
+/// - `scan_rx`: receives a fresh env list from the background scanner; `None` if no background scan.
+/// - `rescanning`: `true` when initial envs came from cache.
+/// - `first_run`: when `true`, the onboarding overlay is shown on startup.
+pub fn run(
+    envs: Vec<Environment>,
+    config: &mut Config,
+    scan_rx: Option<mpsc::Receiver<Vec<Environment>>>,
+    rescanning: bool,
+    first_run: bool,
+) -> Result<(Option<String>, AppState)> {
     let mut app = AppState::new(
         envs,
         &config.session.last_tab,
         &config.session.last_sort,
     );
     app.scroll_offset = config.session.last_scroll;
+    app.rescanning = rescanning;
+
+    if first_run {
+        app.onboarding = Some(onboarding::OnboardingState::new(
+            &config.scan.roots,
+            config.scan.depth_limit,
+        ));
+    }
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -31,7 +50,7 @@ pub fn run(envs: Vec<Environment>, config: &Config) -> Result<(Option<String>, A
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = event_loop(&mut terminal, &mut app, config);
+    let result = event_loop(&mut terminal, &mut app, config, scan_rx);
 
     // Always run all teardown steps — use ? would skip subsequent steps on failure
     let _ = disable_raw_mode();
@@ -45,10 +64,20 @@ pub fn run(envs: Vec<Environment>, config: &Config) -> Result<(Option<String>, A
 fn event_loop<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut AppState,
-    config: &Config,
+    config: &mut Config,
+    mut scan_rx: Option<mpsc::Receiver<Vec<Environment>>>,
 ) -> Result<Option<String>> {
     loop {
         terminal.draw(|f| ui::render(f, app))?;
+
+        // Poll background scan result without blocking
+        if let Some(rx) = &scan_rx {
+            match rx.try_recv() {
+                Ok(new_envs) => app.update_envs(new_envs),
+                Err(mpsc::TryRecvError::Disconnected) => app.rescanning = false,
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
 
         if event::poll(Duration::from_millis(100))? {
             match event::read()? {
@@ -66,6 +95,25 @@ fn event_loop<B: ratatui::backend::Backend>(
                                 Some(format!("Found {} environments", app.envs.len()));
                         }
                         EventOutcome::Continue => {}
+                    }
+
+                    // Apply onboarding result immediately after it's confirmed
+                    if let Some(result) = app.onboarding_result.take() {
+                        config.scan.roots = result.roots;
+                        config.scan.depth_limit = result.depth_limit;
+                        config.scan.ignore = result.ignore;
+                        crate::config::save(config).ok();
+                        // Rescan with the new settings
+                        let scan_cfg = config.scan.clone();
+                        let (tx, rx) = mpsc::channel();
+                        std::thread::spawn(move || {
+                            let envs = scanner::scan(&scan_cfg);
+                            let _ = crate::config::cache::save(&envs);
+                            let _ = tx.send(envs);
+                        });
+                        scan_rx = Some(rx);
+                        app.rescanning = true;
+                        app.status_message = Some("Settings saved — rescanning…".to_string());
                     }
                 }
                 Event::Mouse(mouse) => {
