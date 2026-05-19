@@ -35,12 +35,19 @@ fn main() -> anyhow::Result<()> {
     let envs = scanner::scan(&cfg.scan);
     eprintln!("Found {} environments.", envs.len());
 
-    let activation_cmd = tui::run(envs, &cfg)?;
+    let (activation_cmd, app) = tui::run(envs, &cfg)?;
 
-    // Save session state
+    // Persist session state
+    cfg.session.last_tab = app.active_tab.label().to_string();
+    cfg.session.last_sort = match app.sort_field {
+        tui::app::SortField::Size => "size",
+        tui::app::SortField::Name => "name",
+        tui::app::SortField::LastUsed => "last_used",
+        tui::app::SortField::Health => "health",
+    }.to_string();
+    cfg.session.last_scroll = app.scroll_offset;
     config::save(&cfg)?;
 
-    // Print activation command to stdout so the shell can eval it
     if let Some(cmd) = activation_cmd {
         println!("{cmd}");
     }

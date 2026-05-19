@@ -16,6 +16,7 @@ pub enum EnvKind {
 }
 
 impl EnvKind {
+    #[allow(dead_code)]
     pub fn label(&self) -> &'static str {
         match self {
             EnvKind::Python => "Python",

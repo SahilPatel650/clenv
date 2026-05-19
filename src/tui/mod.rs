@@ -16,8 +16,8 @@ use events::EventOutcome;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::{io, time::Duration};
 
-/// Run the TUI. Returns Some(activation_cmd) if user pressed `a`.
-pub fn run(envs: Vec<Environment>, config: &Config) -> Result<Option<String>> {
+/// Run the TUI. Returns (activation_cmd, final app state).
+pub fn run(envs: Vec<Environment>, config: &Config) -> Result<(Option<String>, AppState)> {
     let mut app = AppState::new(
         envs,
         &config.session.last_tab,
@@ -33,15 +33,13 @@ pub fn run(envs: Vec<Environment>, config: &Config) -> Result<Option<String>> {
 
     let result = event_loop(&mut terminal, &mut app, config);
 
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
+    // Always run all teardown steps — use ? would skip subsequent steps on failure
+    let _ = disable_raw_mode();
+    let _ = execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture);
+    let _ = terminal.show_cursor();
 
-    result
+    let activation_cmd = result?;
+    Ok((activation_cmd, app))
 }
 
 fn event_loop<B: ratatui::backend::Backend>(
