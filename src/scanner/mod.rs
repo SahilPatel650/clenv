@@ -38,17 +38,14 @@ pub fn scan(config: &ScanConfig) -> Vec<Environment> {
     // Phase 3: manager-aware discovery
     let manager_envs = managers::discover_all();
 
-    // Phase 4: dedup — only add manager envs whose canonical path isn't already present,
-    // and which fall under one of the configured roots (respecting the ignore list).
-    let fs_paths: HashSet<PathBuf> = fs_envs
+    // Phase 4: dedup — add manager envs not already present.
+    // Manager CLIs report envs stored wherever the tool keeps them (e.g. ~/micromamba,
+    // ~/.pyenv), which is typically outside the scan roots, so no root check is applied.
+    // seen_paths grows as envs are accepted so that two managers reporting the same path
+    // (e.g. conda aliased as mamba) don't produce duplicates.
+    let mut seen_paths: HashSet<PathBuf> = fs_envs
         .iter()
         .filter_map(|e| e.path.canonicalize().ok())
-        .collect();
-
-    let canonical_roots: Vec<PathBuf> = config
-        .roots
-        .iter()
-        .filter_map(|r| r.canonicalize().ok())
         .collect();
 
     let canonical_ignores: Vec<PathBuf> = config
@@ -61,20 +58,18 @@ pub fn scan(config: &ScanConfig) -> Vec<Environment> {
         let canonical = env.path.canonicalize().ok();
         let already_present = canonical
             .as_ref()
-            .map(|p| fs_paths.contains(p))
+            .map(|p| seen_paths.contains(p))
             .unwrap_or(false);
         if already_present || !env.path.exists() {
             continue;
         }
-        // Only include if the env falls under one of the scan roots
-        // and is not under an ignored path.
-        let under_root = canonical.as_ref().map(|p| {
-            canonical_roots.iter().any(|r| p.starts_with(r))
-        }).unwrap_or(false);
         let is_ignored = canonical.as_ref().map(|p| {
             canonical_ignores.iter().any(|ig| p.starts_with(ig))
         }).unwrap_or(false);
-        if under_root && !is_ignored {
+        if !is_ignored {
+            if let Some(p) = canonical {
+                seen_paths.insert(p);
+            }
             metrics::compute(&mut env);
             health::compute(&mut env);
             fs_envs.push(env);
@@ -93,19 +88,34 @@ fn go_module_cache() -> Option<PathBuf> {
 
 fn walk_root(root: &std::path::Path, ignore: &[PathBuf], depth_limit: usize) -> Vec<(PathBuf, EnvKind)> {
     let mut results: Vec<(PathBuf, EnvKind)> = vec![];
-
-    let walker = WalkDir::new(root)
+    let mut walker = WalkDir::new(root)
         .max_depth(depth_limit)
         .follow_links(false)
-        .into_iter()
-        .filter_entry(|e| !ignore.iter().any(|ig| e.path().starts_with(ig)));
+        .into_iter();
 
-    for entry in walker.filter_map(|e| e.ok()) {
+    loop {
+        let entry = match walker.next() {
+            None => break,
+            Some(Err(_)) => continue,
+            Some(Ok(e)) => e,
+        };
+
         if !entry.file_type().is_dir() {
             continue;
         }
-        if let Some(kind) = fs::detect_kind(entry.path()) {
-            results.push((entry.path().to_path_buf(), kind));
+
+        let path = entry.path();
+
+        // Skip ignored directories and don't descend into them
+        if ignore.iter().any(|ig| path.starts_with(ig)) {
+            walker.skip_current_dir();
+            continue;
+        }
+
+        if let Some(kind) = fs::detect_kind(path) {
+            results.push((path.to_path_buf(), kind));
+            // Don't descend into detected env roots — prevents nested node_modules etc.
+            walker.skip_current_dir();
         }
     }
     results
@@ -149,6 +159,8 @@ mod tests {
             depth_limit: 5,
         };
         let envs = scan(&config);
-        assert!(envs.is_empty());
+        // The env inside the ignored directory must not appear,
+        // regardless of what manager CLIs may return for other envs.
+        assert!(!envs.iter().any(|e| e.path == venv));
     }
 }

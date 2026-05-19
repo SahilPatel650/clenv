@@ -1,6 +1,6 @@
 use crate::actions;
-use crate::tui::app::AppState;
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crate::tui::app::{AppState, SortField, Tab};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use humansize::{format_size, BINARY};
 
 pub enum EventOutcome {
@@ -11,7 +11,6 @@ pub enum EventOutcome {
 }
 
 pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
-    // Confirm-delete mode
     if app.confirm_delete {
         return match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
@@ -45,6 +44,14 @@ pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
         };
     }
 
+    if app.show_tab_manager {
+        return handle_tab_manager_key(key, app);
+    }
+
+    if app.searching {
+        return handle_search_key(key, app);
+    }
+
     match key.code {
         KeyCode::Char('q') => EventOutcome::Quit,
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => EventOutcome::Quit,
@@ -66,21 +73,31 @@ pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
             app.move_down();
             EventOutcome::Continue
         }
+        KeyCode::PageUp => {
+            for _ in 0..10 {
+                app.move_up();
+            }
+            EventOutcome::Continue
+        }
+        KeyCode::PageDown => {
+            for _ in 0..10 {
+                app.move_down();
+            }
+            EventOutcome::Continue
+        }
 
         KeyCode::Char('s') => {
             app.cycle_sort();
             EventOutcome::Continue
         }
 
-        KeyCode::Esc => {
-            app.search.clear();
-            app.status_message = None;
+        KeyCode::Char('/') => {
+            app.searching = true;
             EventOutcome::Continue
         }
 
-        KeyCode::Backspace => {
-            app.search.pop();
-            app.selected = 0;
+        KeyCode::Esc => {
+            app.status_message = None;
             EventOutcome::Continue
         }
 
@@ -124,13 +141,8 @@ pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
                     app.status_message =
                         Some("No activation command for this env".to_string());
                 }
-                EventOutcome::Continue
-            } else {
-                // No env selected — treat as search character
-                app.search.push('a');
-                app.selected = 0;
-                EventOutcome::Continue
             }
+            EventOutcome::Continue
         }
 
         KeyCode::Char('y') => {
@@ -153,13 +165,122 @@ pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
             EventOutcome::Continue
         }
 
-        // Any other printable character goes into search
+        _ => EventOutcome::Continue,
+    }
+}
+
+fn handle_search_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
+    match key.code {
+        KeyCode::Esc => {
+            app.search.clear();
+            app.searching = false;
+            app.selected = 0;
+            app.scroll_offset = 0;
+            EventOutcome::Continue
+        }
+        KeyCode::Backspace => {
+            app.search.pop();
+            app.selected = 0;
+            EventOutcome::Continue
+        }
+        KeyCode::Char(' ') => {
+            app.toggle_expand();
+            EventOutcome::Continue
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.move_up();
+            EventOutcome::Continue
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            app.move_down();
+            EventOutcome::Continue
+        }
         KeyCode::Char(c) => {
             app.search.push(c);
             app.selected = 0;
             EventOutcome::Continue
         }
+        _ => EventOutcome::Continue,
+    }
+}
 
+fn handle_tab_manager_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
+    match key.code {
+        KeyCode::Char('q') => return EventOutcome::Quit,
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            return EventOutcome::Quit
+        }
+        KeyCode::Esc | KeyCode::Char('T') => {
+            app.show_tab_manager = false;
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            app.tab_manager_cursor = app.tab_manager_cursor.saturating_sub(1);
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.tab_manager_cursor + 1 < Tab::ALL.len() {
+                app.tab_manager_cursor += 1;
+            }
+        }
+        KeyCode::Char(' ') | KeyCode::Enter => {
+            if let Some(tab) = Tab::ALL.get(app.tab_manager_cursor) {
+                app.toggle_tab_visibility(tab.clone());
+            }
+        }
+        _ => {}
+    }
+    EventOutcome::Continue
+}
+
+pub fn handle_mouse(mouse: MouseEvent, app: &mut AppState) -> EventOutcome {
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            let (col, row) = (mouse.column, mouse.row);
+
+            // Tab manager button toggles the overlay
+            if app.tab_manager_rect.contains(col, row) {
+                app.show_tab_manager = !app.show_tab_manager;
+                return EventOutcome::Continue;
+            }
+
+            // When overlay is open, clicks on items toggle tabs; clicks outside close it
+            if app.show_tab_manager {
+                for (i, rect) in app.tab_manager_item_rects.iter().enumerate() {
+                    if rect.contains(col, row) {
+                        app.tab_manager_cursor = i;
+                        if let Some(tab) = Tab::ALL.get(i) {
+                            app.toggle_tab_visibility(tab.clone());
+                        }
+                        return EventOutcome::Continue;
+                    }
+                }
+                app.show_tab_manager = false;
+                return EventOutcome::Continue;
+            }
+
+            for (i, rect) in app.tab_rects.iter().enumerate() {
+                if rect.contains(col, row) {
+                    app.set_tab(i);
+                    return EventOutcome::Continue;
+                }
+            }
+            for (i, rect) in app.sort_rects.iter().enumerate() {
+                if rect.contains(col, row) {
+                    if let Some(field) = SortField::ALL.get(i) {
+                        app.set_sort(field.clone());
+                    }
+                    return EventOutcome::Continue;
+                }
+            }
+            EventOutcome::Continue
+        }
+        MouseEventKind::ScrollUp => {
+            app.move_up();
+            EventOutcome::Continue
+        }
+        MouseEventKind::ScrollDown => {
+            app.move_down();
+            EventOutcome::Continue
+        }
         _ => EventOutcome::Continue,
     }
 }
@@ -201,8 +322,17 @@ mod tests {
     }
 
     #[test]
-    fn search_chars_accumulate() {
+    fn slash_enters_search_mode() {
         let mut app = make_app(vec![]);
+        assert!(!app.searching);
+        handle_key(key(KeyCode::Char('/')), &mut app);
+        assert!(app.searching);
+    }
+
+    #[test]
+    fn search_chars_accumulate_in_search_mode() {
+        let mut app = make_app(vec![]);
+        handle_key(key(KeyCode::Char('/')), &mut app);
         handle_key(key(KeyCode::Char('a')), &mut app);
         handle_key(key(KeyCode::Char('p')), &mut app);
         handle_key(key(KeyCode::Char('i')), &mut app);
@@ -210,11 +340,22 @@ mod tests {
     }
 
     #[test]
-    fn esc_clears_search() {
+    fn chars_do_not_enter_search_in_command_mode() {
+        let mut app = make_app(vec![]);
+        handle_key(key(KeyCode::Char('p')), &mut app);
+        handle_key(key(KeyCode::Char('i')), &mut app);
+        assert_eq!(app.search, "");
+        assert!(!app.searching);
+    }
+
+    #[test]
+    fn esc_clears_search_and_exits_search_mode() {
         let mut app = make_app(vec![]);
         app.search = "hello".to_string();
+        app.searching = true;
         handle_key(key(KeyCode::Esc), &mut app);
         assert!(app.search.is_empty());
+        assert!(!app.searching);
     }
 
     #[test]
@@ -240,5 +381,16 @@ mod tests {
         let mut app = make_app(vec![env]);
         let outcome = handle_key(key(KeyCode::Char('a')), &mut app);
         assert!(matches!(outcome, EventOutcome::PrintActivation(_)));
+    }
+
+    #[test]
+    fn space_in_search_mode_toggles_expand() {
+        let mut app = make_app(vec![make_env("myenv")]);
+        app.searching = true;
+        assert!(app.expanded_envs.is_empty());
+        handle_key(key(KeyCode::Char(' ')), &mut app);
+        assert_eq!(app.expanded_envs.len(), 1);
+        handle_key(key(KeyCode::Char(' ')), &mut app);
+        assert!(app.expanded_envs.is_empty());
     }
 }

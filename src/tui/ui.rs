@@ -1,13 +1,14 @@
 use crate::env::HealthStatus;
-use crate::tui::app::{AppState, SortDir, SortField, Tab};
+use crate::tui::app::{AppState, HitRect, SortDir, SortField, Tab};
 use humansize::{format_size, BINARY};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, Tabs},
+    widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table},
     Frame,
 };
+use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 fn health_color(status: &HealthStatus) -> Color {
@@ -46,7 +47,16 @@ fn sort_label(field: &SortField, active: &SortField, dir: &SortDir) -> String {
     format!("[{}{}]", field.label(), arrow)
 }
 
-pub fn render(frame: &mut Frame, app: &AppState) {
+fn abbreviated_path(path: &Path) -> String {
+    let home = dirs::home_dir().unwrap_or_default();
+    if let Ok(rel) = path.strip_prefix(&home) {
+        format!("~/{}", rel.display())
+    } else {
+        path.to_string_lossy().to_string()
+    }
+}
+
+pub fn render(frame: &mut Frame, app: &mut AppState) {
     let area = frame.area();
 
     let chunks = Layout::default()
@@ -66,6 +76,9 @@ pub fn render(frame: &mut Frame, app: &AppState) {
     render_detail(frame, app, chunks[3]);
     render_status_bar(frame, app, chunks[4]);
 
+    if app.show_tab_manager {
+        render_tab_manager_overlay(frame, app, area);
+    }
     if app.show_help {
         render_help_overlay(frame, area);
     }
@@ -74,44 +87,131 @@ pub fn render(frame: &mut Frame, app: &AppState) {
     }
 }
 
-fn render_tabs(frame: &mut Frame, app: &AppState, area: Rect) {
-    let titles: Vec<Line> = Tab::ALL.iter().map(|t| Line::from(t.label())).collect();
-    let tabs = Tabs::new(titles)
-        .select(app.active_tab.index())
-        .block(Block::default().borders(Borders::ALL).title(" clenv "))
-        .style(Style::default().fg(Color::White))
-        .highlight_style(
+fn render_tabs(frame: &mut Frame, app: &mut AppState, area: Rect) {
+    let block = Block::default().borders(Borders::ALL).title(" clenv ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height == 0 {
+        return;
+    }
+
+    // Reserve space on the right for the tab manager button "[⚙]"
+    let mgr_label = "[⚙]";
+    let mgr_width = 3u16;
+    let tab_area_width = inner.width.saturating_sub(mgr_width + 1);
+
+    let visible = app.visible_tabs();
+    let mut spans: Vec<Span> = Vec::new();
+    let mut tab_rects: Vec<HitRect> = Vec::new();
+    let mut x = inner.x;
+
+    for (i, tab) in visible.iter().enumerate() {
+        let label = format!(" {} ", tab.label());
+        let label_width = label.len() as u16;
+
+        // Stop if we'd overflow into the button area
+        if x + label_width > inner.x + tab_area_width {
+            break;
+        }
+
+        let style = if **tab == app.active_tab {
             Style::default()
                 .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        );
-    frame.render_widget(tabs, area);
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        tab_rects.push(HitRect {
+            x,
+            y: inner.y,
+            width: label_width,
+            height: inner.height.min(1),
+        });
+        spans.push(Span::styled(label, style));
+        x += label_width;
+
+        if i < visible.len() - 1 {
+            spans.push(Span::styled("│", Style::default().fg(Color::DarkGray)));
+            x += 1;
+        }
+    }
+
+    app.tab_rects = tab_rects;
+
+    // Render the tab labels
+    let tabs_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: tab_area_width,
+        height: inner.height.min(1),
+    };
+    frame.render_widget(Paragraph::new(Line::from(spans)), tabs_area);
+
+    // Render the ⚙ manager button flush to the right
+    let mgr_x = inner.x + inner.width.saturating_sub(mgr_width);
+    let mgr_style = if app.show_tab_manager {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    app.tab_manager_rect = HitRect {
+        x: mgr_x,
+        y: inner.y,
+        width: mgr_width,
+        height: 1,
+    };
+    let mgr_area = Rect {
+        x: mgr_x,
+        y: inner.y,
+        width: mgr_width,
+        height: 1,
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(mgr_label, mgr_style)),
+        mgr_area,
+    );
 }
 
-fn render_sort_bar(frame: &mut Frame, app: &AppState, area: Rect) {
-    let fields = [
-        SortField::Size,
-        SortField::Name,
-        SortField::LastUsed,
-        SortField::Health,
-    ];
-    let mut spans: Vec<Span> = fields
-        .iter()
-        .flat_map(|f| {
-            let label = sort_label(f, &app.sort_field, &app.sort_dir);
-            let style = if f == &app.sort_field {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
-            [Span::styled(label, style), Span::raw("  ")]
-        })
-        .collect();
+fn render_sort_bar(frame: &mut Frame, app: &mut AppState, area: Rect) {
+    let mut spans: Vec<Span> = Vec::new();
+    let mut sort_rects: Vec<HitRect> = Vec::new();
+    let mut x = area.x;
 
-    let search_display = if app.search.is_empty() {
-        Span::styled("Search: _", Style::default().fg(Color::DarkGray))
+    for field in SortField::ALL {
+        let label = sort_label(field, &app.sort_field, &app.sort_dir);
+        // char count for display width (▼/▲ are single-width chars)
+        let label_width = label.chars().count() as u16;
+
+        let style = if field == &app.sort_field {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+
+        sort_rects.push(HitRect {
+            x,
+            y: area.y,
+            width: label_width,
+            height: 1,
+        });
+        spans.push(Span::styled(label, style));
+        spans.push(Span::raw("  "));
+        x += label_width + 2;
+    }
+
+    let search_display = if app.searching {
+        Span::styled(
+            format!("Search: {}█", app.search),
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )
+    } else if app.search.is_empty() {
+        Span::styled("/ to search", Style::default().fg(Color::DarkGray))
     } else {
         Span::styled(
             format!("Search: {}", app.search),
@@ -121,13 +221,17 @@ fn render_sort_bar(frame: &mut Frame, app: &AppState, area: Rect) {
     spans.push(Span::raw("  "));
     spans.push(search_display);
 
+    app.sort_rects = sort_rects;
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-fn render_table(frame: &mut Frame, app: &AppState, area: Rect) {
+fn render_table(frame: &mut Frame, app: &mut AppState, area: Rect) {
+    // account for borders (top+bottom) and header row
+    let max_data_rows = area.height.saturating_sub(3) as usize;
+    app.visible_rows = max_data_rows.max(1);
+
     let filtered = app.filtered_envs();
     let visible_start = app.scroll_offset.min(filtered.len());
-    let visible_end = (visible_start + area.height as usize).min(filtered.len());
 
     let header = Row::new(vec![
         Cell::from("  Name").style(Style::default().add_modifier(Modifier::BOLD)),
@@ -138,39 +242,69 @@ fn render_table(frame: &mut Frame, app: &AppState, area: Rect) {
     ])
     .style(Style::default().fg(Color::Yellow));
 
-    let rows: Vec<Row> = filtered[visible_start..visible_end]
-        .iter()
-        .enumerate()
-        .map(|(i, env)| {
-            let idx = visible_start + i;
-            let is_selected = idx == app.selected;
-            let cursor = if is_selected { "▶" } else { " " };
-            let size_str = format_size(env.size_bytes, BINARY);
-            let version_str = env.version.as_deref().unwrap_or("—").to_string();
-            let path_str = {
-                let home = dirs::home_dir().unwrap_or_default();
-                if let Ok(rel) = env.path.strip_prefix(&home) {
-                    format!("~/{}", rel.display())
-                } else {
-                    env.path.to_string_lossy().to_string()
-                }
-            };
-            let row_style = if is_selected {
-                Style::default().bg(Color::DarkGray)
-            } else {
-                Style::default()
-            };
+    let mut rows: Vec<Row> = Vec::new();
+    let mut row_count = 0usize;
+
+    for (offset, env) in filtered[visible_start..].iter().enumerate() {
+        if row_count >= max_data_rows {
+            break;
+        }
+        let idx = visible_start + offset;
+        let is_selected = idx == app.selected;
+        let is_expanded = app.expanded_envs.contains(&env.path);
+
+        let cursor = if is_selected { "▶" } else { " " };
+        let expand_marker = if is_expanded { "▾" } else { " " };
+        let size_str = format_size(env.size_bytes, BINARY);
+        let version_str = env.version.as_deref().unwrap_or("—").to_string();
+        let path_str = abbreviated_path(&env.path);
+
+        let row_style = if is_selected {
+            Style::default().bg(Color::DarkGray)
+        } else {
+            Style::default()
+        };
+
+        rows.push(
             Row::new(vec![
-                Cell::from(format!("{cursor} {}", env.name)),
+                Cell::from(format!("{cursor}{expand_marker} {}", env.name)),
                 Cell::from(path_str),
                 Cell::from(size_str),
                 Cell::from(env.health.symbol())
                     .style(Style::default().fg(health_color(&env.health))),
                 Cell::from(version_str),
             ])
-            .style(row_style)
-        })
-        .collect();
+            .style(row_style),
+        );
+        row_count += 1;
+
+        if is_expanded && row_count < max_data_rows {
+            let packages = env
+                .package_count
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".to_string());
+            let last_used = format_age(env.last_accessed);
+            let cache = format_size(env.cache_size_bytes, BINARY);
+            let health_msgs = env.health.messages().join(", ");
+            let full_path = env.path.to_string_lossy().to_string();
+
+            rows.push(
+                Row::new(vec![
+                    Cell::from(format!("  ↳ pkgs:{packages}  cache:{cache}")),
+                    Cell::from(format!("  {full_path}")),
+                    Cell::from(last_used),
+                    Cell::from(if health_msgs.is_empty() {
+                        String::new()
+                    } else {
+                        health_msgs
+                    }),
+                    Cell::from(""),
+                ])
+                .style(Style::default().fg(Color::DarkGray)),
+            );
+            row_count += 1;
+        }
+    }
 
     let table = Table::new(
         rows,
@@ -196,12 +330,7 @@ fn render_detail(frame: &mut Frame, app: &AppState, area: Rect) {
     };
 
     let block = block.title(format!(" {} ", env.name));
-    let home = dirs::home_dir().unwrap_or_default();
-    let path_str = if let Ok(rel) = env.path.strip_prefix(&home) {
-        format!("~/{}", rel.display())
-    } else {
-        env.path.to_string_lossy().to_string()
-    };
+    let path_str = abbreviated_path(&env.path);
 
     let packages = env
         .package_count
@@ -249,28 +378,100 @@ fn render_detail(frame: &mut Frame, app: &AppState, area: Rect) {
 }
 
 fn render_status_bar(frame: &mut Frame, app: &AppState, area: Rect) {
-    let msg = if let Some(status) = &app.status_message {
+    let msg = if app.searching {
+        Span::styled(
+            "[Esc] exit search  [Space] expand/collapse  [↑↓] navigate  [Backspace] delete char",
+            Style::default().fg(Color::Cyan),
+        )
+    } else if let Some(status) = &app.status_message {
         Span::styled(status.as_str(), Style::default().fg(Color::Green))
+    } else if app.show_tab_manager {
+        Span::styled(
+            "[↑↓] navigate  [Space/Enter] toggle  [Esc] close tab manager",
+            Style::default().fg(Color::Cyan),
+        )
     } else {
         Span::raw(
-            "[d] delete  [c] clear cache  [a] activate  [y] copy  [r] refresh  [/] search  [?] help  [q] quit",
+            "[d] delete  [c] cache  [a] activate  [y] copy  [r] refresh  [/] search  [⚙] tabs  [?] help  [q] quit",
         )
     };
     frame.render_widget(Paragraph::new(Line::from(msg)), area);
 }
 
+fn render_tab_manager_overlay(frame: &mut Frame, app: &mut AppState, area: Rect) {
+    let overlay_width: u16 = 22;
+    let overlay_height: u16 = Tab::ALL.len() as u16 + 2; // +2 for borders
+    let x = area.x + area.width.saturating_sub(overlay_width + 1);
+    let y = area.y + 3; // just below the tab bar
+    let popup_area = Rect {
+        x,
+        y,
+        width: overlay_width.min(area.width),
+        height: overlay_height.min(area.height.saturating_sub(3)),
+    };
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Tabs ")
+        .style(Style::default().bg(Color::Black));
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let mut item_rects: Vec<HitRect> = Vec::new();
+    let mut lines: Vec<Line> = Vec::new();
+
+    for (i, tab) in Tab::ALL.iter().enumerate() {
+        let is_hidden = app.hidden_tabs.contains(tab);
+        let checkbox = if is_hidden { "[ ] " } else { "[x] " };
+        let is_cursor = i == app.tab_manager_cursor;
+
+        let row_y = inner.y + i as u16;
+        item_rects.push(HitRect {
+            x: inner.x,
+            y: row_y,
+            width: inner.width,
+            height: 1,
+        });
+
+        let style = if is_cursor {
+            Style::default()
+                .bg(Color::DarkGray)
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else if is_hidden {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(checkbox, style),
+            Span::styled(tab.label(), style),
+        ]));
+    }
+
+    app.tab_manager_item_rects = item_rects;
+    frame.render_widget(Paragraph::new(lines), inner);
+}
+
 fn render_help_overlay(frame: &mut Frame, area: Rect) {
-    let popup_area = centered_rect(60, 70, area);
+    let popup_area = centered_rect(60, 80, area);
     frame.render_widget(Clear, popup_area);
     let help_text = vec![
         Line::from(""),
         Line::from("  Keybindings"),
         Line::from("  ───────────"),
-        Line::from("  Tab / Shift+Tab   Cycle tabs"),
-        Line::from("  ↑ / ↓             Navigate list"),
+        Line::from("  Tab / Shift+Tab   Cycle tabs (or click tab bar)"),
+        Line::from("  ↑ / ↓  k / j      Navigate list"),
+        Line::from("  PgUp / PgDn       Jump 10 rows"),
+        Line::from("  Scroll wheel      Scroll list"),
         Line::from("  s                 Cycle sort field"),
-        Line::from("  /                 Start search"),
-        Line::from("  Esc               Clear search"),
+        Line::from("  Click sort label  Set sort / toggle direction"),
+        Line::from("  /                 Enter search mode"),
+        Line::from("  Space (search)    Expand / collapse env details"),
+        Line::from("  Esc (search)      Exit search, clear query"),
         Line::from("  d                 Delete selected env"),
         Line::from("  c                 Clear cache"),
         Line::from("  a                 Print activation command"),
