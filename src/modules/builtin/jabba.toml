@@ -1,0 +1,17 @@
+name = "jabba"
+description = "Cross-platform Java version manager"
+category = "package-managers"
+
+[detect]
+commands = ['[ -f "$HOME/.jabba/jabba.sh" ]']
+
+[install.linux]
+command = "curl -sL https://github.com/shyiko/jabba/raw/master/install.sh | bash && . ~/.jabba/jabba.sh"
+
+[install.macos]
+command = "curl -sL https://github.com/shyiko/jabba/raw/master/install.sh | bash && . ~/.jabba/jabba.sh"
+
+[zshrc]
+snippet = '[ -s "$HOME/.jabba/jabba.sh" ] && source "$HOME/.jabba/jabba.sh"'
+startup_ms_estimate = 50
+order = 170

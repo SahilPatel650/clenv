@@ -1,0 +1,19 @@
+name = "nvm"
+description = "Node Version Manager — lazy-loaded to avoid startup penalty"
+category = "package-managers"
+
+[detect]
+commands = ['[ -d "$HOME/.nvm" ]']
+
+[install.linux]
+command = "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install.sh | bash"
+
+[install.macos]
+command = "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install.sh | bash"
+
+[zshrc]
+# NVM is loaded lazily via the zsh-nvm plugin (NVM_LAZY_LOAD=true set in oh-my-zsh snippet).
+# No direct snippet needed; lazy-load flags are set in the oh-my-zsh module.
+snippet = ""
+startup_ms_estimate = 0
+order = 120

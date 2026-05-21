@@ -9,6 +9,10 @@ pub enum EventOutcome {
     PrintActivation(String),
     Refresh,
     DeleteConfirmed,
+    SaveShellModules,
+    AdoptShellModule(String),
+    CopyShellContext,
+    SyncPrivateRepo,
 }
 
 pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
@@ -33,6 +37,54 @@ pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
 
     if app.searching {
         return handle_search_key(key, app);
+    }
+
+    if app.active_tab == Tab::Shell {
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                if app.shell.cursor > 0 {
+                    app.shell.cursor -= 1;
+                }
+                app.shell.scroll_offset = app.shell.scroll_offset.min(app.shell.cursor);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if app.shell.cursor + 1 < app.shell.entries.len() {
+                    app.shell.cursor += 1;
+                }
+                // clamp scroll: keep cursor visible within visible_rows
+                let visible = app.visible_rows.max(1);
+                if app.shell.cursor >= app.shell.scroll_offset + visible {
+                    app.shell.scroll_offset = app.shell.cursor + 1 - visible;
+                }
+            }
+            KeyCode::Char(' ') => {
+                if let Some(entry) = app.selected_module() {
+                    let name = entry.definition.name.clone();
+                    let current = app.shell.pending_enabled.get(&name).copied().unwrap_or(entry.enabled);
+                    app.shell.pending_enabled.insert(name, !current);
+                }
+            }
+            KeyCode::Char('s') => return EventOutcome::SaveShellModules,
+            KeyCode::Char('a') => {
+                if let Some(entry) = app.selected_module() {
+                    let name = entry.definition.name.clone();
+                    return EventOutcome::AdoptShellModule(name);
+                }
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                return EventOutcome::Quit;
+            }
+            KeyCode::Char('c') => return EventOutcome::CopyShellContext,
+            KeyCode::Char('r') => return EventOutcome::SyncPrivateRepo,
+            KeyCode::Char('?') => {
+                app.show_help = !app.show_help;
+            }
+            KeyCode::Char('q') => return EventOutcome::Quit,
+            KeyCode::Tab => app.next_tab(),
+            KeyCode::BackTab => app.prev_tab(),
+            _ => {}
+        }
+        return EventOutcome::Continue;
     }
 
     match key.code {
@@ -290,6 +342,16 @@ pub fn handle_mouse(mouse: MouseEvent, app: &mut AppState) -> EventOutcome {
                 }
                 app.show_tab_manager = false;
                 return EventOutcome::Continue;
+            }
+
+            // Shell tab item clicks — set cursor to clicked row
+            if app.active_tab == Tab::Shell {
+                for (i, rect) in app.shell.item_rects.iter().enumerate() {
+                    if rect.contains(col, row) {
+                        app.shell.cursor = i;
+                        return EventOutcome::Continue;
+                    }
+                }
             }
 
             for (i, rect) in app.tab_rects.iter().enumerate() {

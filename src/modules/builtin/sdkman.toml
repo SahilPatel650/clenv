@@ -1,0 +1,20 @@
+name = "sdkman"
+description = "Software Development Kit Manager for JVM languages"
+category = "package-managers"
+
+[detect]
+commands = ['[ -d "$HOME/.sdkman" ]']
+
+[install.linux]
+command = 'curl -s "https://get.sdkman.io" | bash'
+
+[install.macos]
+command = 'curl -s "https://get.sdkman.io" | bash'
+
+[zshrc]
+snippet = '''
+export SDKMAN_DIR="$HOME/.sdkman"
+[[ -s "$SDKMAN_DIR/bin/sdkman-init.sh" ]] && source "$SDKMAN_DIR/bin/sdkman-init.sh"
+'''
+startup_ms_estimate = 200
+order = 140

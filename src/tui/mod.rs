@@ -1,6 +1,7 @@
 pub mod app;
 pub mod events;
 pub mod onboarding;
+pub mod theme;
 pub mod ui;
 
 use crate::actions;
@@ -150,6 +151,170 @@ fn event_loop<B: ratatui::backend::Backend>(
                                 }
                             }
                             app.confirm_delete = false;
+                        }
+                        EventOutcome::SaveShellModules => {
+                            let to_enable: Vec<_> = app.shell.entries.iter()
+                                .filter(|e| {
+                                    let pending = app.shell.pending_enabled.get(&e.definition.name).copied().unwrap_or(e.enabled);
+                                    pending && !e.enabled
+                                })
+                                .map(|e| e.definition.clone())
+                                .collect();
+
+                            let to_disable: Vec<_> = app.shell.entries.iter()
+                                .filter(|e| {
+                                    let pending = app.shell.pending_enabled.get(&e.definition.name).copied().unwrap_or(e.enabled);
+                                    !pending && e.enabled
+                                })
+                                .map(|e| e.definition.clone())
+                                .collect();
+
+                            if to_enable.is_empty() && to_disable.is_empty() {
+                                app.status_message = Some("No changes to save".to_string());
+                            } else {
+                                let zshrc_path = config.modules.zshrc_path.clone()
+                                    .unwrap_or_else(|| app.home_dir.join(".zshrc"));
+
+                                for module in &to_enable {
+                                    let needs_install = matches!(
+                                        crate::modules::detect::module_status(module, &zshrc_path),
+                                        crate::modules::ModuleStatus::NotInstalled
+                                    );
+
+                                    if needs_install {
+                                        if let Some(cmd) = crate::modules::installer::install_preview(module) {
+                                            let _ = disable_raw_mode();
+                                            let mut stdout = io::stdout();
+                                            let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture);
+                                            let _ = terminal.show_cursor();
+                                            println!("\r\n  Installing {}: {}\r\n", module.name, cmd);
+
+                                            let status = std::process::Command::new("sh")
+                                                .arg("-c")
+                                                .arg(&cmd)
+                                                .status();
+
+                                            match status {
+                                                Ok(s) if s.success() => println!("\r\n  ✓ {} installed\r\n", module.name),
+                                                Ok(s) => println!("\r\n  ✗ {} install failed (exit {})\r\n", module.name, s),
+                                                Err(e) => println!("\r\n  ✗ {} install error: {}\r\n", module.name, e),
+                                            }
+
+                                            println!("  Press any key to return…\r");
+                                            let _ = enable_raw_mode();
+                                            loop {
+                                                if event::poll(Duration::from_secs(60))? {
+                                                    if let Event::Key(_) = event::read()? { break; }
+                                                }
+                                            }
+                                            let mut stdout = io::stdout();
+                                            let _ = execute!(stdout, EnterAlternateScreen, EnableMouseCapture);
+                                            terminal.clear()?;
+                                        }
+                                    }
+
+                                    if !module.zshrc.snippet.is_empty() {
+                                        let _ = crate::modules::zshrc::write_block(&zshrc_path, &module.name, &module.zshrc.snippet);
+                                    }
+                                    if !config.modules.enabled.contains(&module.name) {
+                                        config.modules.enabled.push(module.name.clone());
+                                    }
+                                }
+
+                                for module in &to_disable {
+                                    let _ = crate::modules::zshrc::remove_block(&zshrc_path, &module.name);
+                                    config.modules.enabled.retain(|n| n != &module.name);
+                                }
+
+                                let _ = crate::config::save(config);
+                                app.load_shell_modules(&config.modules);
+
+                                let n = to_enable.len() + to_disable.len();
+                                app.status_message = Some(format!("{n} shell module(s) updated — reload your shell"));
+                            }
+                        }
+                        EventOutcome::AdoptShellModule(name) => {
+                            let zshrc_path = config.modules.zshrc_path.clone()
+                                .unwrap_or_else(|| app.home_dir.join(".zshrc"));
+
+                            if let Some(entry) = app.shell.entries.iter().find(|e| e.definition.name == name) {
+                                let module = entry.definition.clone();
+                                match crate::modules::zshrc::write_block(&zshrc_path, &module.name, &module.zshrc.snippet) {
+                                    Ok(_) => {
+                                        if !config.modules.enabled.contains(&module.name) {
+                                            config.modules.enabled.push(module.name.clone());
+                                        }
+                                        let _ = crate::config::save(config);
+                                        app.load_shell_modules(&config.modules);
+                                        app.status_message = Some(format!("Adopted {} — reload your shell", name));
+                                    }
+                                    Err(e) => app.status_message = Some(format!("Adopt failed: {e}")),
+                                }
+                            }
+                        }
+                        EventOutcome::CopyShellContext => {
+                            let mut ctx = String::new();
+                            ctx.push_str("# clenv Module Context\n\n");
+                            ctx.push_str("## Available modules and their current status:\n\n");
+                            for entry in &app.shell.entries {
+                                ctx.push_str(&format!(
+                                    "- {} [{}]: {}\n",
+                                    entry.definition.name,
+                                    entry.status.label(),
+                                    entry.definition.description
+                                ));
+                            }
+
+                            let zshrc_path = config.modules.zshrc_path.clone()
+                                .unwrap_or_else(|| app.home_dir.join(".zshrc"));
+                            if let Ok(zshrc) = std::fs::read_to_string(&zshrc_path) {
+                                ctx.push_str("\n## Current ~/.zshrc:\n\n```zsh\n");
+                                ctx.push_str(&zshrc);
+                                ctx.push_str("\n```\n");
+                            }
+
+                            match actions::copy_to_clipboard(&ctx) {
+                                Ok(_) => app.status_message = Some("AI context copied to clipboard".to_string()),
+                                Err(e) => app.status_message = Some(format!("Clipboard error: {e}")),
+                            }
+                        }
+                        EventOutcome::SyncPrivateRepo => {
+                            if let Some(repo_url) = &config.modules.private_dotfiles_repo.clone() {
+                                let private_dir = dirs::home_dir()
+                                    .unwrap_or_default()
+                                    .join(".config/clenv/private");
+
+                                // Suspend TUI for streaming output
+                                let _ = disable_raw_mode();
+                                let mut stdout = io::stdout();
+                                let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture);
+                                let _ = terminal.show_cursor();
+
+                                println!("\r\n  Syncing private repo: {repo_url}\r\n");
+
+                                match crate::modules::private_repo::sync(repo_url, &private_dir) {
+                                    Ok(_) => {
+                                        println!("\r\n  \u{2713} Private repo synced\r\n");
+                                        app.shell.private_repo_last_sync = Some(std::time::SystemTime::now());
+                                    }
+                                    Err(e) => println!("\r\n  \u{2717} Sync failed: {e}\r\n"),
+                                }
+
+                                println!("  Press any key to return\u{2026}\r");
+                                let _ = enable_raw_mode();
+                                loop {
+                                    if event::poll(Duration::from_secs(60))? {
+                                        if let Event::Key(_) = event::read()? { break; }
+                                    }
+                                }
+                                let mut stdout = io::stdout();
+                                let _ = execute!(stdout, EnterAlternateScreen, EnableMouseCapture);
+                                terminal.clear()?;
+                            } else {
+                                app.status_message = Some(
+                                    "No private repo configured \u{2014} add private_dotfiles_repo to config.toml".to_string()
+                                );
+                            }
                         }
                         EventOutcome::Continue => {}
                     }

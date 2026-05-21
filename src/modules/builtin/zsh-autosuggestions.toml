@@ -1,0 +1,18 @@
+name = "zsh-autosuggestions"
+description = "Fish-like autosuggestions for Zsh"
+category = "zsh-plugins"
+depends_on = ["oh-my-zsh"]
+
+[detect]
+commands = ['[ -d "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/zsh-autosuggestions" ]']
+
+[install.linux]
+command = "git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions"
+
+[install.macos]
+command = "git clone https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions"
+
+[zshrc]
+# Configured via plugins list in oh-my-zsh snippet
+snippet = ""
+order = 30

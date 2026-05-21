@@ -1,0 +1,21 @@
+name = "thefuck"
+description = "Corrects errors in previous console commands (lazy-loaded)"
+category = "productivity"
+
+[detect]
+commands = ["which thefuck"]
+
+[install.linux]
+command = "pip3 install thefuck"
+
+[install.macos]
+command = "brew install thefuck"
+
+[zshrc]
+snippet = '''
+# Lazy-load thefuck to avoid ~500ms startup penalty
+thefuck_alias() { eval $(thefuck --alias); unfunction thefuck_alias; fuck "$@"; }
+alias fuck='thefuck_alias'
+'''
+startup_ms_estimate = 0
+order = 160

@@ -1,6 +1,6 @@
 use crate::env::{EnvKind, Environment, HealthStatus};
 use super::onboarding::{OnboardingResult, OnboardingState};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
@@ -31,12 +31,13 @@ pub enum Tab {
     Ruby,
     Cargo,
     Java,
+    Shell,
 }
 
 impl Tab {
     pub const ALL: &'static [Tab] = &[
         Tab::All, Tab::Python, Tab::Node, Tab::Conda,
-        Tab::Go, Tab::Ruby, Tab::Cargo, Tab::Java,
+        Tab::Go, Tab::Ruby, Tab::Cargo, Tab::Java, Tab::Shell,
     ];
 
     pub fn label(&self) -> &'static str {
@@ -49,6 +50,7 @@ impl Tab {
             Tab::Ruby => "Ruby",
             Tab::Cargo => "Cargo",
             Tab::Java => "Java",
+            Tab::Shell => "Shell",
         }
     }
 
@@ -62,9 +64,32 @@ impl Tab {
             Tab::Ruby => *kind == EnvKind::Ruby,
             Tab::Cargo => *kind == EnvKind::Cargo,
             Tab::Java => *kind == EnvKind::Java,
+            Tab::Shell => false,
         }
     }
 
+}
+
+pub struct ShellTabState {
+    pub entries: Vec<crate::modules::ModuleEntry>,
+    pub cursor: usize,
+    pub scroll_offset: usize,
+    pub item_rects: Vec<HitRect>,
+    pub pending_enabled: HashMap<String, bool>,
+    pub private_repo_last_sync: Option<std::time::SystemTime>,
+}
+
+impl Default for ShellTabState {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            cursor: 0,
+            scroll_offset: 0,
+            item_rects: Vec::new(),
+            pending_enabled: HashMap::new(),
+            private_repo_last_sync: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -133,6 +158,7 @@ pub struct AppState {
     pub rescanning: bool,
     pub onboarding: Option<OnboardingState>,
     pub onboarding_result: Option<OnboardingResult>,
+    pub shell: ShellTabState,
 }
 
 impl AppState {
@@ -178,6 +204,7 @@ impl AppState {
             rescanning: false,
             onboarding: None,
             onboarding_result: None,
+            shell: ShellTabState::default(),
         }
     }
 
@@ -376,6 +403,34 @@ impl AppState {
             }
         }
     }
+
+    pub fn load_shell_modules(&mut self, config: &crate::config::ModulesConfig) {
+        let zshrc_path = config.zshrc_path.clone()
+            .unwrap_or_else(|| self.home_dir.join(".zshrc"));
+
+        let modules = crate::modules::load_builtin_modules();
+
+        self.shell.entries = modules
+            .into_iter()
+            .map(|module| {
+                let status = crate::modules::detect::module_status(&module, &zshrc_path);
+                let enabled = config.enabled.contains(&module.name);
+                crate::modules::ModuleEntry { definition: module, status, enabled }
+            })
+            .collect();
+
+        // Initialize pending_enabled to mirror current enabled state
+        for entry in &self.shell.entries {
+            self.shell.pending_enabled.insert(
+                entry.definition.name.clone(),
+                entry.enabled,
+            );
+        }
+    }
+
+    pub fn selected_module(&self) -> Option<&crate::modules::ModuleEntry> {
+        self.shell.entries.get(self.shell.cursor)
+    }
 }
 
 #[cfg(test)]
@@ -440,7 +495,7 @@ mod tests {
     #[test]
     fn tab_cycling_wraps() {
         let mut app = AppState::new(vec![], "All", "size");
-        app.active_tab = Tab::Java; // last tab
+        app.active_tab = Tab::Shell; // last tab
         app.next_tab();
         assert_eq!(app.active_tab, Tab::All);
     }

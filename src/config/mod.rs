@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod claude_md;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,20 @@ pub struct Config {
     pub ui: UiConfig,
     #[serde(default)]
     pub session: SessionState,
+    #[serde(default)]
+    pub modules: ModulesConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ModulesConfig {
+    #[serde(default)]
+    pub enabled: Vec<String>,
+    #[serde(default)]
+    pub private_dotfiles_repo: Option<String>,
+    #[serde(default)]
+    pub agent_context_repo: Option<String>,
+    #[serde(default)]
+    pub zshrc_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -71,6 +86,7 @@ impl Default for Config {
             scan: ScanConfig::default(),
             ui: UiConfig::default(),
             session: SessionState::default(),
+            modules: ModulesConfig::default(),
         }
     }
 }
@@ -101,6 +117,10 @@ pub fn save(config: &Config) -> Result<()> {
     let path = config_path();
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
+        let claude_md_path = parent.join("CLAUDE.md");
+        if !claude_md_path.exists() {
+            let _ = std::fs::write(&claude_md_path, claude_md::CLAUDE_MD);
+        }
     }
     let content = toml::to_string_pretty(config)?;
     std::fs::write(&path, content)?;

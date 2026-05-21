@@ -1,0 +1,22 @@
+name = "conda-aliases"
+description = "Convenience aliases: conda -> mamba/micromamba wrapper"
+category = "aliases"
+
+[detect]
+commands = ["which mamba"]
+
+[zshrc]
+snippet = '''
+# conda -> micromamba wrapper
+conda() {
+  micromamba "$@"
+}
+
+# Give the alias/wrapper the same completion as micromamba
+(( $+functions[compdef] )) && compdef conda=micromamba
+
+# Shorter alias
+alias mm='micromamba'
+(( $+functions[compdef] )) && compdef mm=micromamba
+'''
+order = 101

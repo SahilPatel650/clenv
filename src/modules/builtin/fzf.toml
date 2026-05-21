@@ -1,0 +1,17 @@
+name = "fzf"
+description = "Command-line fuzzy finder"
+category = "productivity"
+
+[detect]
+commands = ["which fzf"]
+
+[install.linux]
+command = "git clone --depth 1 https://github.com/junegunn/fzf.git ~/.fzf && ~/.fzf/install --no-update-rc"
+
+[install.macos]
+command = "brew install fzf"
+
+[zshrc]
+snippet = '[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh'
+startup_ms_estimate = 10
+order = 40

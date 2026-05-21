@@ -1,0 +1,17 @@
+name = "uv"
+description = "Extremely fast Python package installer and resolver"
+category = "package-managers"
+
+[detect]
+commands = ["which uv"]
+
+[install.linux]
+command = "curl -LsSf https://astral.sh/uv/install.sh | sh"
+
+[install.macos]
+command = "curl -LsSf https://astral.sh/uv/install.sh | sh"
+
+[zshrc]
+snippet = ""
+startup_ms_estimate = 0
+order = 110

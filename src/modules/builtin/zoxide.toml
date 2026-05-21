@@ -1,0 +1,17 @@
+name = "zoxide"
+description = "Smarter cd command that learns your habits"
+category = "productivity"
+
+[detect]
+commands = ["which zoxide"]
+
+[install.linux]
+command = "curl -sSfL https://raw.githubusercontent.com/ajeetdsouza/zoxide/main/install.sh | sh"
+
+[install.macos]
+command = "brew install zoxide"
+
+[zshrc]
+snippet = 'eval "$(zoxide init zsh --cmd cd)"'
+startup_ms_estimate = 10
+order = 150

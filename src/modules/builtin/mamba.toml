@@ -1,0 +1,31 @@
+name = "mamba"
+description = "Fast conda-compatible package manager via micromamba"
+category = "package-managers"
+depends_on = ["conda-aliases"]
+
+[detect]
+commands = ["which mamba", "which micromamba"]
+
+[install.linux]
+command = 'curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest | tar -xvj bin/micromamba && sudo mv bin/micromamba /usr/local/bin/'
+
+[install.macos]
+command = "brew install micromamba"
+
+[zshrc]
+snippet = '''
+# >>> mamba initialize >>>
+# !! Contents within this block are managed by 'micromamba shell init' !!
+export MAMBA_EXE='/home/sahil/.local/bin/micromamba';
+export MAMBA_ROOT_PREFIX='/home/sahil/micromamba';
+__mamba_setup="$("$MAMBA_EXE" shell hook --shell zsh --root-prefix "$MAMBA_ROOT_PREFIX" 2> /dev/null)"
+if [ $? -eq 0 ]; then
+    eval "$__mamba_setup"
+else
+    alias micromamba="$MAMBA_EXE"  # Fallback on help from micromamba activate
+fi
+unset __mamba_setup
+# <<< mamba initialize <<<
+'''
+startup_ms_estimate = 50
+order = 100

@@ -1,0 +1,17 @@
+name = "homebrew-linux"
+description = "Linuxbrew package manager for Linux"
+category = "package-managers"
+
+[detect]
+commands = ["which brew"]
+
+[install.linux]
+command = '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+
+[zshrc]
+snippet = '''
+eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
+FPATH="/home/linuxbrew/.linuxbrew/share/zsh/site-functions:${FPATH}"
+'''
+startup_ms_estimate = 20
+order = 5
