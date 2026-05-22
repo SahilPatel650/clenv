@@ -175,6 +175,66 @@ impl SortField {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsTab {
+    Shell,
+    Scan,
+    Ui,
+}
+
+impl SettingsTab {
+    pub fn next(self) -> SettingsTab {
+        match self {
+            SettingsTab::Shell => SettingsTab::Scan,
+            SettingsTab::Scan  => SettingsTab::Ui,
+            SettingsTab::Ui    => SettingsTab::Shell,
+        }
+    }
+
+    pub fn prev(self) -> SettingsTab {
+        match self {
+            SettingsTab::Shell => SettingsTab::Ui,
+            SettingsTab::Scan  => SettingsTab::Shell,
+            SettingsTab::Ui    => SettingsTab::Scan,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SettingsTab::Shell => "Shell",
+            SettingsTab::Scan  => "Scan",
+            SettingsTab::Ui    => "UI",
+        }
+    }
+
+    pub const ALL: &'static [SettingsTab] = &[
+        SettingsTab::Shell,
+        SettingsTab::Scan,
+        SettingsTab::Ui,
+    ];
+
+    pub fn row_count(self) -> usize {
+        match self {
+            SettingsTab::Shell => 5,
+            SettingsTab::Scan  => 3,
+            SettingsTab::Ui    => 3,
+        }
+    }
+}
+
+impl Default for SettingsTab {
+    fn default() -> Self { SettingsTab::Shell }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SettingsState {
+    pub tab: SettingsTab,
+    pub cursor: usize,
+    /// `Some(row)` when that row is in text-edit mode.
+    pub editing: Option<usize>,
+    pub input_buf: String,
+}
+
 pub struct AppState {
     pub home_dir: PathBuf,
     pub envs: Vec<Environment>,
@@ -204,6 +264,8 @@ pub struct AppState {
     pub base_deps_overlay: Option<BaseDepsOverlay>,
     pub base_deps_checked: bool,
     pub zshrc_modified_this_session: bool,
+    pub show_settings: bool,
+    pub settings_state: SettingsState,
 }
 
 impl AppState {
@@ -253,6 +315,8 @@ impl AppState {
             base_deps_overlay: None,
             base_deps_checked: false,
             zshrc_modified_this_session: false,
+            show_settings: false,
+            settings_state: SettingsState::default(),
         }
     }
 
@@ -697,5 +761,28 @@ mod tests {
         app.cycle_sort(); // Size — wraps, toggles to Asc
         assert_eq!(app.sort_dir, SortDir::Asc);
         assert_eq!(app.sort_field, SortField::Size);
+    }
+
+    #[test]
+    fn settings_state_defaults() {
+        let s = SettingsState::default();
+        assert_eq!(s.tab, SettingsTab::Shell);
+        assert_eq!(s.cursor, 0);
+        assert!(s.editing.is_none());
+        assert!(s.input_buf.is_empty());
+    }
+
+    #[test]
+    fn settings_tab_next_wraps() {
+        assert_eq!(SettingsTab::Shell.next(), SettingsTab::Scan);
+        assert_eq!(SettingsTab::Scan.next(), SettingsTab::Ui);
+        assert_eq!(SettingsTab::Ui.next(), SettingsTab::Shell);
+    }
+
+    #[test]
+    fn settings_tab_prev_wraps() {
+        assert_eq!(SettingsTab::Shell.prev(), SettingsTab::Ui);
+        assert_eq!(SettingsTab::Ui.prev(), SettingsTab::Scan);
+        assert_eq!(SettingsTab::Scan.prev(), SettingsTab::Shell);
     }
 }
