@@ -1163,6 +1163,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect, theme: &Theme) {
         Line::from("  r                 Refresh scan"),
         Line::from("  ?                 Toggle this help"),
         Line::from("  .                 Open settings"),
+        Line::from("  ◀ ▶  (Shell tab)  Switch Modules / File Order page"),
         Line::from("  q                 Quit"),
     ];
     let block = popup_block(" Help ", theme);
