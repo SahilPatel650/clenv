@@ -87,15 +87,31 @@ pub fn render(frame: &mut Frame, app: &mut AppState) {
     render_tabs(frame, app, chunks[0], &theme);
 
     if app.active_tab == Tab::Shell {
-        render_shell_tab(frame, app, chunks[2], &theme);
-        render_shell_detail(frame, app, chunks[3], &theme);
+        // Re-layout everything below the tab bar for the Shell tab
+        let below_tabs = Rect {
+            x: area.x,
+            y: chunks[0].y + chunks[0].height,
+            width: area.width,
+            height: area.height.saturating_sub(chunks[0].height),
+        };
+        let detail_h: u16 = if app.shell.detail_expanded { 14 } else { 5 };
+        let shell_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(5),
+                Constraint::Length(detail_h),
+                Constraint::Length(1),
+            ])
+            .split(below_tabs);
+        render_shell_tab(frame, app, shell_chunks[0], &theme);
+        render_shell_detail(frame, app, shell_chunks[1], &theme);
+        render_status_bar(frame, app, shell_chunks[2], &theme);
     } else {
         render_sort_bar(frame, app, chunks[1], &theme);
         render_table(frame, app, chunks[2], &theme);
         render_detail(frame, app, chunks[3], &theme);
+        render_status_bar(frame, app, chunks[4], &theme);
     }
-
-    render_status_bar(frame, app, chunks[4], &theme);
 
     if app.onboarding.is_some() {
         render_onboarding_overlay(frame, app, area, &theme);
@@ -110,6 +126,9 @@ pub fn render(frame: &mut Frame, app: &mut AppState) {
     }
     if app.base_deps_overlay.is_some() {
         render_base_deps_overlay(frame, app, area, &theme);
+    }
+    if app.shell.new_block_overlay.is_some() {
+        render_new_block_overlay(frame, app, area, &theme);
     }
 }
 
@@ -433,7 +452,7 @@ fn render_status_bar(frame: &mut Frame, app: &AppState, area: Rect, theme: &Them
         )
     } else if app.active_tab == Tab::Shell {
         Span::raw(
-            "[Enter/Space] install/toggle  [d] disable  [c] AI context  [r] sync  [1] envs  [?] help  [q] quit",
+            "[Enter/i] install  [Space] expand/diff  [d] disable  [n] new block  [c] AI context  [r] sync  [?] help  [q] quit",
         )
     } else {
         Span::raw(
@@ -459,12 +478,31 @@ fn render_shell_tab(frame: &mut Frame, app: &mut AppState, area: Rect, theme: &T
         CATEGORY_ORDER.iter().position(|c| *c == cat).unwrap_or(CATEGORY_ORDER.len())
     }
 
+    // nav_index → flat_items index; flat_items includes headers.
+    // nav_index 0..unmanaged.len() = unmanaged blocks
+    // nav_index unmanaged.len().. = entries
     #[derive(Clone)]
     enum ListItem {
         Header(String),
-        Module(usize),
+        Unmanaged(usize),  // index into shell.unmanaged
+        Module(usize),     // index into shell.entries
     }
 
+    let unmanaged_count = app.shell.unmanaged.len();
+    let nav_count = app.shell_nav_count();
+
+    // Build the flat display list
+    let mut flat_items: Vec<ListItem> = Vec::new();
+
+    // UNMANAGED section (only if there are any)
+    if unmanaged_count > 0 {
+        flat_items.push(ListItem::Header("unmanaged".to_string()));
+        for i in 0..unmanaged_count {
+            flat_items.push(ListItem::Unmanaged(i));
+        }
+    }
+
+    // Managed modules by category
     let mut categories: Vec<String> = {
         let mut cats: Vec<String> = app.shell.entries
             .iter()
@@ -477,7 +515,6 @@ fn render_shell_tab(frame: &mut Frame, app: &mut AppState, area: Rect, theme: &T
     };
     categories.dedup();
 
-    let mut flat_items: Vec<ListItem> = Vec::new();
     for cat in &categories {
         flat_items.push(ListItem::Header(cat.clone()));
         for (idx, entry) in app.shell.entries.iter().enumerate() {
@@ -486,8 +523,6 @@ fn render_shell_tab(frame: &mut Frame, app: &mut AppState, area: Rect, theme: &T
             }
         }
     }
-
-    let module_count = app.shell.entries.len();
 
     let block = Block::default().borders(Borders::TOP | Borders::BOTTOM);
     let inner = block.inner(area);
@@ -499,24 +534,40 @@ fn render_shell_tab(frame: &mut Frame, app: &mut AppState, area: Rect, theme: &T
 
     let max_visible_rows = inner.height as usize;
     let total_flat = flat_items.len();
-    let scroll = app.shell.scroll_offset.min(total_flat.saturating_sub(1));
 
-    let mut item_rects: Vec<HitRect> = Vec::new();
-    item_rects.resize(module_count, HitRect::default());
-
-    let flat_cursor = flat_items.iter().position(|item| {
-        matches!(item, ListItem::Module(i) if *i == app.shell.cursor)
+    // Find flat index of currently selected nav item
+    let nav_cursor = app.shell.cursor;
+    let flat_cursor = flat_items.iter().position(|item| match item {
+        ListItem::Unmanaged(i) => *i == nav_cursor,
+        ListItem::Module(i) => unmanaged_count + *i == nav_cursor,
+        ListItem::Header(_) => false,
     }).unwrap_or(0);
 
-    let visible_start = scroll;
-    let visible_end = (visible_start + max_visible_rows).min(total_flat);
+    // Clamp scroll
+    if flat_cursor < app.shell.scroll_offset {
+        app.shell.scroll_offset = flat_cursor;
+    }
+    if flat_cursor >= app.shell.scroll_offset + max_visible_rows {
+        app.shell.scroll_offset = flat_cursor + 1 - max_visible_rows;
+    }
+    let scroll = app.shell.scroll_offset.min(total_flat.saturating_sub(1));
+
+    // item_rects maps nav_index → click rect
+    let mut item_rects: Vec<HitRect> = vec![HitRect::default(); nav_count.max(1)];
 
     let mut row_y = inner.y;
-    for flat_idx in visible_start..visible_end {
+    for flat_idx in scroll..(scroll + max_visible_rows).min(total_flat) {
+        if row_y >= inner.y + inner.height {
+            break;
+        }
         let item = &flat_items[flat_idx];
         match item {
             ListItem::Header(cat) => {
-                let label = cat.to_uppercase().replace('-', " ");
+                let label = if cat == "unmanaged" {
+                    "UNMANAGED  (user-written content between clenv blocks)".to_string()
+                } else {
+                    cat.to_uppercase().replace('-', " ")
+                };
                 let line = Line::from(Span::styled(
                     format!(" {label}"),
                     Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
@@ -525,53 +576,87 @@ fn render_shell_tab(frame: &mut Frame, app: &mut AppState, area: Rect, theme: &T
                 frame.render_widget(Paragraph::new(line), row_area);
                 row_y += 1;
             }
+            ListItem::Unmanaged(idx) => {
+                let block_entry = &app.shell.unmanaged[*idx];
+                let nav_idx = *idx;
+                let is_selected = nav_idx == nav_cursor;
+                let label = block_entry.label();
+                let line_count = block_entry.line_count;
+
+                let row_area = Rect { x: inner.x, y: row_y, width: inner.width, height: 1 };
+
+                let spans: Vec<Span> = if is_selected {
+                    vec![Span::styled(
+                        format!("  [~] {label:<40}  {line_count} lines"),
+                        Style::default().add_modifier(Modifier::REVERSED),
+                    )]
+                } else {
+                    vec![
+                        Span::styled("  [", Style::default().fg(theme.muted)),
+                        Span::styled("~", Style::default().fg(theme.warn)),
+                        Span::styled("] ", Style::default().fg(theme.muted)),
+                        Span::styled(format!("{label:<40}"), Style::default().fg(theme.muted)),
+                        Span::styled(format!("  {line_count} lines"), Style::default().fg(theme.muted)),
+                    ]
+                };
+                frame.render_widget(Paragraph::new(Line::from(spans)), row_area);
+
+                item_rects[nav_idx] = HitRect {
+                    x: inner.x, y: row_y, width: inner.width, height: 1,
+                };
+                row_y += 1;
+            }
             ListItem::Module(idx) => {
                 let entry = &app.shell.entries[*idx];
+                let nav_idx = unmanaged_count + *idx;
                 let name = &entry.definition.name;
                 let desc = &entry.definition.description;
-                let is_selected = *idx == app.shell.cursor;
+                let is_selected = nav_idx == nav_cursor;
                 let dep_missing = !entry.missing_deps.is_empty();
                 let unavailable = !entry.can_install
                     && matches!(entry.status, ModuleStatus::NotInstalled);
 
-                // Visual indicator: ✓ active, ○ inactive, ↓ can install, ⊘ blocked, × unavailable
                 let (indicator, status_label, status_color) = if dep_missing {
                     ("⊘", "dep missing", theme.muted)
                 } else if unavailable {
                     ("×", "unavailable", theme.muted)
                 } else {
                     match &entry.status {
-                        ModuleStatus::ManagedActive => ("✓", "active", theme.ok),
+                        ModuleStatus::ManagedActive => {
+                            if entry.block_diff.is_some() {
+                                ("✓", "active  ±", theme.warn)
+                            } else {
+                                ("✓", "active", theme.ok)
+                            }
+                        }
                         ModuleStatus::ManagedInactive => ("○", "inactive", theme.muted),
                         ModuleStatus::NotInstalled => ("↓", "not installed", theme.highlight),
-                        ModuleStatus::InstalledUnmanaged => ("○", "inactive", theme.muted),
+                        ModuleStatus::InstalledUnmanaged => ("~", "unmanaged", theme.warn),
                     }
                 };
 
-                // Dim blocked/unavailable rows
-                let base_fg = if dep_missing || unavailable {
-                    theme.muted
-                } else {
-                    theme.text
-                };
+                let base_fg = if dep_missing || unavailable { theme.muted } else { theme.text };
 
-                let name_padded = format!("{:<18}", if name.len() > 18 { &name[..18] } else { name });
-                let desc_max = inner.width.saturating_sub(32) as usize;
-                let desc_str: String = if desc.len() > desc_max {
+                let name_w = 18usize;
+                let name_str = if name.len() > name_w { &name[..name_w] } else { name };
+                let name_padded = format!("{name_str:<name_w$}");
+                let desc_max = inner.width.saturating_sub(38) as usize;
+                let desc_str = if desc.len() > desc_max {
                     desc[..desc_max].to_string()
                 } else {
-                    format!("{:<width$}", desc, width = desc_max)
+                    format!("{desc:<desc_max$}")
                 };
+                // Show expand marker if detail panel is expanded for this item
+                let expand = if is_selected && app.shell.detail_expanded { "▾" } else { "▶" };
 
                 let row_area = Rect { x: inner.x, y: row_y, width: inner.width, height: 1 };
 
                 let spans: Vec<Span> = if is_selected {
-                    vec![
-                        Span::styled(
-                            format!("  [{}] {name_padded}  {desc_str}  {status_label}", indicator),
-                            Style::default().add_modifier(Modifier::REVERSED),
-                        ),
-                    ]
+                    vec![Span::styled(
+                        format!("  [{}] {name_padded}  {desc_str}  {status_label}  {expand}",
+                            indicator),
+                        Style::default().add_modifier(Modifier::REVERSED),
+                    )]
                 } else {
                     vec![
                         Span::styled("  [", Style::default().fg(base_fg)),
@@ -582,59 +667,86 @@ fn render_shell_tab(frame: &mut Frame, app: &mut AppState, area: Rect, theme: &T
                         Span::styled(desc_str, Style::default().fg(base_fg)),
                         Span::raw("  "),
                         Span::styled(status_label, Style::default().fg(status_color)),
+                        Span::raw("  "),
+                        Span::styled("▶", Style::default().fg(theme.muted)),
                     ]
                 };
 
                 frame.render_widget(Paragraph::new(Line::from(spans)), row_area);
 
-                item_rects[*idx] = HitRect {
-                    x: inner.x,
-                    y: row_y,
-                    width: inner.width,
-                    height: 1,
+                item_rects[nav_idx] = HitRect {
+                    x: inner.x, y: row_y, width: inner.width, height: 1,
                 };
-
                 row_y += 1;
             }
         }
     }
 
     app.shell.item_rects = item_rects;
-
-    if flat_cursor < app.shell.scroll_offset {
-        app.shell.scroll_offset = flat_cursor;
-    }
-    if flat_cursor >= app.shell.scroll_offset + max_visible_rows {
-        app.shell.scroll_offset = flat_cursor + 1 - max_visible_rows;
-    }
 }
 
 fn render_shell_detail(frame: &mut Frame, app: &AppState, area: Rect, theme: &Theme) {
-    let block = Block::default().borders(Borders::ALL);
+    // Show unmanaged block detail if cursor is in the unmanaged section
+    if let Some(ub) = app.selected_unmanaged() {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" unmanaged block ");
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
 
+        let mut lines: Vec<Line> = vec![
+            Line::from(vec![
+                Span::styled("Lines: ", Style::default().fg(theme.highlight)),
+                Span::raw(ub.line_count.to_string()),
+                Span::raw("   "),
+                Span::styled("[Space] show/hide content", Style::default().fg(theme.muted)),
+            ]),
+        ];
+        if app.shell.detail_expanded {
+            lines.push(Line::from(""));
+            for content_line in ub.content.lines().take((inner.height as usize).saturating_sub(2)) {
+                lines.push(Line::from(Span::styled(
+                    format!("  {content_line}"),
+                    Style::default().fg(theme.muted),
+                )));
+            }
+            if ub.content.lines().count() > (inner.height as usize).saturating_sub(2) {
+                lines.push(Line::from(Span::styled(
+                    "  ...",
+                    Style::default().fg(theme.muted),
+                )));
+            }
+        }
+        frame.render_widget(Paragraph::new(lines), inner);
+        return;
+    }
+
+    let block = Block::default().borders(Borders::ALL);
     let Some(entry) = app.selected_module() else {
         frame.render_widget(block, area);
         return;
     };
 
     let def = &entry.definition;
-    let block = block.title(format!(" {} ", def.name));
+    let title = if app.shell.detail_expanded {
+        format!(" {} — current content ", def.name)
+    } else if entry.block_diff.is_some() {
+        format!(" {} ⚠ modified ", def.name)
+    } else {
+        format!(" {} ", def.name)
+    };
+    let title_style = if entry.block_diff.is_some() && !app.shell.detail_expanded {
+        Style::default().fg(theme.warn).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.text)
+    };
+    let block = block.title(Span::styled(title, title_style));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
     let status_label = entry.status.label();
     let startup_ms = def.zshrc.startup_ms_estimate;
-    let depends = if def.depends_on.is_empty() {
-        "none".to_string()
-    } else {
-        def.depends_on.join(", ")
-    };
-    let user_extend = def.zshrc.user_extend.as_deref().unwrap_or("not set");
-    let platform_note = if entry.can_install {
-        "yes"
-    } else if matches!(entry.status, crate::modules::ModuleStatus::NotInstalled) {
-        "no installer for this OS"
-    } else {
-        "—"
-    };
+    let depends = if def.depends_on.is_empty() { "none".to_string() } else { def.depends_on.join(", ") };
 
     let mut text = vec![
         Line::from(vec![
@@ -646,11 +758,8 @@ fn render_shell_detail(frame: &mut Frame, app: &AppState, area: Rect, theme: &Th
             Span::raw(status_label),
             Span::raw("    "),
             Span::styled("Startup: ", Style::default().fg(theme.highlight)),
-            if startup_ms > 0 {
-                Span::raw(format!("~{startup_ms}ms"))
-            } else {
-                Span::styled("minimal", Style::default().fg(theme.muted))
-            },
+            if startup_ms > 0 { Span::raw(format!("~{startup_ms}ms")) }
+            else { Span::styled("minimal", Style::default().fg(theme.muted)) },
         ]),
         Line::from(vec![
             Span::styled("Depends on:   ", Style::default().fg(theme.highlight)),
@@ -663,29 +772,59 @@ fn render_shell_detail(frame: &mut Frame, app: &AppState, area: Rect, theme: &Th
                 )
             },
         ]),
-        Line::from(vec![
-            Span::styled("Installable:  ", Style::default().fg(theme.highlight)),
-            Span::raw(platform_note),
-        ]),
-        Line::from(vec![
-            Span::styled("zshrc order:  ", Style::default().fg(theme.highlight)),
-            Span::raw(def.zshrc.order.to_string()),
-        ]),
-        Line::from(vec![
-            Span::styled("User extend:  ", Style::default().fg(theme.highlight)),
-            Span::raw(user_extend.to_string()),
-        ]),
     ];
 
-    if let Some(sync_time) = app.shell.private_repo_last_sync {
-        let label = format_age(Some(sync_time));
+    if app.shell.detail_expanded {
+        // Show raw block content currently in .zshrc
+        let zshrc_path = dirs::home_dir().unwrap_or_default().join(".zshrc");
+        if let Some(content) = crate::modules::zshrc::read_block(&zshrc_path, &def.name) {
+            text.push(Line::from(vec![
+                Span::styled("Current content:", Style::default().fg(theme.highlight)),
+            ]));
+            let avail = inner.height.saturating_sub(text.len() as u16 + 1) as usize;
+            for line in content.lines().take(avail) {
+                text.push(Line::from(Span::styled(
+                    format!("  {line}"),
+                    Style::default().fg(theme.muted),
+                )));
+            }
+        } else {
+            text.push(Line::from(Span::styled(
+                "  (block not present in .zshrc)",
+                Style::default().fg(theme.muted),
+            )));
+        }
+    } else {
+        let platform_note = if entry.can_install { "yes" }
+            else if matches!(entry.status, crate::modules::ModuleStatus::NotInstalled) { "no installer for this OS" }
+            else { "—" };
         text.push(Line::from(vec![
-            Span::styled("Private repo: ", Style::default().fg(theme.highlight)),
-            Span::raw(format!("synced {label}")),
+            Span::styled("Installable:  ", Style::default().fg(theme.highlight)),
+            Span::raw(platform_note),
         ]));
+        text.push(Line::from(vec![
+            Span::styled("zshrc order:  ", Style::default().fg(theme.highlight)),
+            Span::raw(def.zshrc.order.to_string()),
+        ]));
+        if entry.block_diff.is_some() {
+            text.push(Line::from(vec![
+                Span::styled("Modified:     ", Style::default().fg(theme.highlight)),
+                Span::styled(
+                    "yes — press [Space] to view current content",
+                    Style::default().fg(theme.warn),
+                ),
+            ]));
+        }
+        if let Some(sync_time) = app.shell.private_repo_last_sync {
+            let label = format_age(Some(sync_time));
+            text.push(Line::from(vec![
+                Span::styled("Private repo: ", Style::default().fg(theme.highlight)),
+                Span::raw(format!("synced {label}")),
+            ]));
+        }
     }
 
-    frame.render_widget(Paragraph::new(text).block(block), area);
+    frame.render_widget(Paragraph::new(text), inner);
 }
 
 fn render_onboarding_overlay(frame: &mut Frame, app: &AppState, area: Rect, theme: &Theme) {
@@ -977,6 +1116,109 @@ fn render_base_deps_overlay(frame: &mut Frame, app: &AppState, area: Rect, theme
     ]));
 
     frame.render_widget(Paragraph::new(lines), inner);
+}
+
+fn render_new_block_overlay(frame: &mut Frame, app: &AppState, area: Rect, theme: &Theme) {
+    use crate::tui::app::NewBlockFocus;
+    let Some(overlay) = &app.shell.new_block_overlay else { return };
+
+    let popup_area = centered_rect(70, 75, area);
+    frame.render_widget(Clear, popup_area);
+    let block = popup_block(" New Shell Block ", theme);
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    if inner.height < 8 {
+        return;
+    }
+
+    // Fixed rows for name + description fields; remaining = position list
+    let field_h = 5u16;
+    let pos_h = inner.height.saturating_sub(field_h + 1);
+    let field_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(field_h),
+            Constraint::Length(1),
+            Constraint::Length(pos_h),
+        ])
+        .split(inner);
+
+    // ── Name + Description fields ─────────────────────────────────────────────
+    let name_active = overlay.focus == NewBlockFocus::Name;
+    let desc_active = overlay.focus == NewBlockFocus::Description;
+
+    let name_style = if name_active { Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD) }
+        else { Style::default().fg(theme.muted) };
+    let desc_style = if desc_active { Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD) }
+        else { Style::default().fg(theme.muted) };
+
+    let cursor = |active: bool| if active { "█" } else { "" };
+
+    let field_lines = vec![
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Name:        ", name_style),
+            Span::styled(format!("{}{}", overlay.name, cursor(name_active)), Style::default().fg(theme.text)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("  Description: ", desc_style),
+            Span::styled(format!("{}{}", overlay.description, cursor(desc_active)), Style::default().fg(theme.text)),
+        ]),
+        Line::from(""),
+    ];
+    frame.render_widget(Paragraph::new(field_lines), field_chunks[0]);
+
+    // ── Position label ────────────────────────────────────────────────────────
+    let pos_active = overlay.focus == NewBlockFocus::Position;
+    let pos_label_style = if pos_active { Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD) }
+        else { Style::default().fg(theme.muted) };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled("  Insert position (↑↓ to move):", pos_label_style))),
+        field_chunks[1],
+    );
+
+    // ── Position list ─────────────────────────────────────────────────────────
+    let pos_inner = field_chunks[2];
+    let max_rows = pos_inner.height as usize;
+    let total = overlay.position_items.len();
+    let scroll_start = overlay.position_cursor.saturating_sub(max_rows / 2)
+        .min(total.saturating_sub(max_rows));
+    let visible = &overlay.position_items[scroll_start..(scroll_start + max_rows).min(total)];
+
+    let mut pos_lines: Vec<Line> = Vec::new();
+    for (i, item) in visible.iter().enumerate() {
+        let abs_idx = scroll_start + i;
+        let is_cursor = abs_idx == overlay.position_cursor;
+        let style = if is_cursor {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else if pos_active {
+            Style::default().fg(theme.text)
+        } else {
+            Style::default().fg(theme.muted)
+        };
+        let marker = if is_cursor { "▶" } else { " " };
+        pos_lines.push(Line::from(Span::styled(
+            format!("  {marker} {}", item.label),
+            style,
+        )));
+    }
+    frame.render_widget(Paragraph::new(pos_lines), pos_inner);
+
+    // ── Hint bar at bottom of popup ───────────────────────────────────────────
+    // (render inside inner area's last row if space allows)
+    if inner.height > 0 {
+        let hint_y = inner.y + inner.height.saturating_sub(1);
+        let hint_area = Rect { x: inner.x, y: hint_y, width: inner.width, height: 1 };
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "  [Tab] next field  [Enter] create  [Esc] cancel",
+                Style::default().fg(theme.muted),
+            )),
+            hint_area,
+        );
+    }
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
