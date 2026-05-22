@@ -17,6 +17,7 @@ target
 rustc-ice-*.txt
 
 docs/superpowers/
+.superpowers
 
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
