@@ -62,6 +62,30 @@ pub fn run(
     let _ = terminal.show_cursor();
 
     let activation_cmd = result?;
+
+    if app.zshrc_modified_this_session {
+        use std::io::Write as _;
+        print!("\n  ~/.zshrc was modified this session.\n  Source it now to apply changes? [y/N]: ");
+        let _ = io::stdout().flush();
+
+        let _ = crossterm::terminal::enable_raw_mode();
+        let sourced = loop {
+            if crossterm::event::poll(std::time::Duration::from_secs(30)).unwrap_or(false) {
+                if let Ok(crossterm::event::Event::Key(k)) = crossterm::event::read() {
+                    break matches!(k.code, crossterm::event::KeyCode::Char('y') | crossterm::event::KeyCode::Char('Y'));
+                }
+            } else {
+                break false;
+            }
+        };
+        let _ = crossterm::terminal::disable_raw_mode();
+        println!();
+
+        if sourced {
+            println!("source ~/.zshrc");
+        }
+    }
+
     Ok((activation_cmd, app))
 }
 
