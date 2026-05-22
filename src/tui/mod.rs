@@ -454,6 +454,21 @@ fn event_loop<B: ratatui::backend::Backend>(
                             }
                         }
 
+                        EventOutcome::MoveBlock { from_idx, to_idx } => {
+                            let zshrc_path = config.modules.zshrc_path.clone()
+                                .unwrap_or_else(|| app.home_dir.join(".zshrc"));
+                            match crate::modules::zshrc::move_block(&zshrc_path, from_idx, to_idx) {
+                                Ok(()) => {
+                                    app.zshrc_modified_this_session = true;
+                                    app.load_shell_modules(config);
+                                    app.status_message = Some("Block moved".to_string());
+                                }
+                                Err(e) => {
+                                    app.status_message = Some(format!("Move failed: {e}"));
+                                }
+                            }
+                        }
+
                         EventOutcome::Continue => {}
                     }
 
