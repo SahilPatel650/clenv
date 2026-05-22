@@ -248,6 +248,20 @@ pub struct SettingsState {
     pub input_buf: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct ChangedBlock {
+    pub name: Option<String>,
+    pub new_content: String,
+    pub canonical_content: Option<String>,
+    pub custom_content: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ZshrcChangeModal {
+    pub block: ChangedBlock,
+    pub selected: u8,
+}
+
 pub struct AppState {
     pub home_dir: PathBuf,
     pub envs: Vec<Environment>,
@@ -279,6 +293,7 @@ pub struct AppState {
     pub zshrc_modified_this_session: bool,
     pub show_settings: bool,
     pub settings_state: SettingsState,
+    pub zshrc_change_modal: Option<ZshrcChangeModal>,
 }
 
 impl AppState {
@@ -330,6 +345,7 @@ impl AppState {
             zshrc_modified_this_session: false,
             show_settings: false,
             settings_state: SettingsState::default(),
+            zshrc_change_modal: None,
         }
     }
 
@@ -803,5 +819,21 @@ mod tests {
     fn shell_page_defaults_to_modules() {
         let app = AppState::new(vec![], "All", "size");
         assert_eq!(app.shell.page, ShellPage::Modules);
+    }
+
+    #[test]
+    fn zshrc_change_modal_default_selection() {
+        let modal = ZshrcChangeModal {
+            block: ChangedBlock {
+                name: Some("fzf".to_string()),
+                new_content: "eval \"$(fzf --zsh)\"".to_string(),
+                canonical_content: Some("[ -f ~/.fzf.zsh ] && source ~/.fzf.zsh".to_string()),
+                custom_content: None,
+            },
+            selected: 1,
+        };
+        assert_eq!(modal.selected, 1);
+        assert!(modal.block.canonical_content.is_some());
+        assert!(modal.block.custom_content.is_none());
     }
 }
