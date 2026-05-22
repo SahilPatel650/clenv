@@ -294,6 +294,8 @@ pub struct AppState {
     pub show_settings: bool,
     pub settings_state: SettingsState,
     pub zshrc_change_modal: Option<ZshrcChangeModal>,
+    /// Click rects for the three columns inside the zshrc change modal (indices 0,1,2 → choices 1,2,3).
+    pub zshrc_change_column_rects: [HitRect; 3],
 }
 
 impl AppState {
@@ -346,6 +348,7 @@ impl AppState {
             show_settings: false,
             settings_state: SettingsState::default(),
             zshrc_change_modal: None,
+            zshrc_change_column_rects: [HitRect::default(), HitRect::default(), HitRect::default()],
         }
     }
 

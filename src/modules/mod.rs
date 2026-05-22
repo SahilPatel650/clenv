@@ -78,6 +78,53 @@ pub struct ModuleEntry {
     pub can_install: bool,
     /// Names of `depends_on` modules that are not currently installed.
     pub missing_deps: Vec<String>,
+    /// Diff between canonical snippet and what's actually in .zshrc, if different.
+    pub block_diff: Option<BlockDiff>,
+    /// Whether the detail panel is expanded for this entry.
+    pub expanded: bool,
+}
+
+// ── Unmanaged / custom block types ───────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct UnmanagedBlock {
+    pub index: usize,
+    /// Raw content of the block (the .zshrc lines between clenv-managed blocks).
+    pub content: String,
+    pub line_count: usize,
+    pub expanded: bool,
+}
+
+impl UnmanagedBlock {
+    /// First non-blank line of content, truncated for display.
+    pub fn label(&self) -> String {
+        self.content.lines()
+            .find(|l| !l.trim().is_empty())
+            .map(|l| if l.len() > 50 { format!("{}…", &l[..50]) } else { l.to_string() })
+            .unwrap_or_else(|| "(empty)".to_string())
+    }
+}
+
+// ── Diff types ────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct BlockDiff {
+    pub lines: Vec<DiffLine>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiffLine {
+    pub kind: DiffLineKind,
+    /// Word-level spans for this line. Each span is (text, changed).
+    /// `changed` = true means the word was added/removed (highlight it).
+    pub spans: Vec<(String, bool)>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum DiffLineKind {
+    Equal,
+    Removed,
+    Added,
 }
 
 /// Load all built-in modules. Returns them sorted by zshrc.order.

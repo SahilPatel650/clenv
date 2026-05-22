@@ -11,7 +11,7 @@ use crate::scanner;
 use anyhow::Result;
 use app::{AppState, BaseDepsOverlay};
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event},
+    event::{DisableMouseCapture, EnableMouseCapture, Event},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -256,13 +256,15 @@ fn event_loop<B: ratatui::backend::Backend>(
 
                                     if streams {
                                         println!("  Press any key to return…\r");
-                                        // Read one keypress before resuming the TUI
                                         let _ = enable_raw_mode();
+                                        // Use rx so the reader thread captures the key and we
+                                        // consume it here rather than re-processing it in the
+                                        // main event loop.
                                         loop {
-                                            if event::poll(Duration::from_secs(60))? {
-                                                if let Event::Key(_) = event::read()? {
-                                                    break;
-                                                }
+                                            match rx.recv_timeout(Duration::from_secs(60)) {
+                                                Ok(TuiEvent::Crossterm(Event::Key(_))) => break,
+                                                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                                                Err(mpsc::RecvTimeoutError::Disconnected) => break,
                                             }
                                         }
                                         let mut stdout = io::stdout();
@@ -344,8 +346,10 @@ fn event_loop<B: ratatui::backend::Backend>(
                                                 println!("  Press any key to return…\r");
                                                 let _ = enable_raw_mode();
                                                 loop {
-                                                    if event::poll(Duration::from_secs(60))? {
-                                                        if let Event::Key(_) = event::read()? { break; }
+                                                    match rx.recv_timeout(Duration::from_secs(60)) {
+                                                        Ok(TuiEvent::Crossterm(Event::Key(_))) => break,
+                                                        Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                                                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
                                                     }
                                                 }
                                                 let mut stdout = io::stdout();
@@ -478,8 +482,10 @@ fn event_loop<B: ratatui::backend::Backend>(
                                     println!("  Press any key to return\u{2026}\r");
                                     let _ = enable_raw_mode();
                                     loop {
-                                        if event::poll(Duration::from_secs(60))? {
-                                            if let Event::Key(_) = event::read()? { break; }
+                                        match rx.recv_timeout(Duration::from_secs(60)) {
+                                            Ok(TuiEvent::Crossterm(Event::Key(_))) => break,
+                                            Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
                                         }
                                     }
                                     let mut stdout = io::stdout();
@@ -662,7 +668,45 @@ fn event_loop<B: ratatui::backend::Backend>(
                         }
                     }
                     Event::Mouse(mouse) => {
-                        events::handle_mouse(mouse, app);
+                        if let EventOutcome::ZshrcChangeResolved { choice, block } =
+                            events::handle_mouse(mouse, app)
+                        {
+                            let zshrc_path = config.modules.zshrc_path.clone()
+                                .unwrap_or_else(|| app.home_dir.join(".zshrc"));
+                            let result = match choice {
+                                1 => Ok(()),
+                                2 => {
+                                    if let (Some(name), Some(canonical)) =
+                                        (&block.name, &block.canonical_content)
+                                    {
+                                        crate::modules::zshrc::write_block(&zshrc_path, name, canonical)
+                                    } else { Ok(()) }
+                                }
+                                3 => {
+                                    if let (Some(name), Some(custom)) =
+                                        (&block.name, &block.custom_content)
+                                    {
+                                        crate::modules::zshrc::write_block(&zshrc_path, name, custom)
+                                    } else { Ok(()) }
+                                }
+                                _ => Ok(()),
+                            };
+                            match result {
+                                Ok(()) => {
+                                    app.zshrc_modified_this_session = true;
+                                    if let Some(name) = &block.name {
+                                        if !config.modules.enabled.contains(name) {
+                                            config.modules.enabled.push(name.clone());
+                                        }
+                                        let _ = crate::config::save(config);
+                                    }
+                                    app.load_shell_modules(config);
+                                }
+                                Err(e) => {
+                                    app.status_message = Some(format!("Error applying config: {e}"));
+                                }
+                            }
+                        }
                     }
                     _ => {}
                 }

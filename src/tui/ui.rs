@@ -1620,11 +1620,11 @@ fn render_new_block_overlay(frame: &mut Frame, app: &AppState, area: Rect, theme
     }
 }
 
-pub fn render_zshrc_change_modal(frame: &mut Frame, app: &AppState, area: Rect, theme: &Theme) {
+pub fn render_zshrc_change_modal(frame: &mut Frame, app: &mut AppState, area: Rect, theme: &Theme) {
     let Some(modal) = &app.zshrc_change_modal else { return };
 
-    let width = (area.width * 4 / 5).min(100).max(60);
-    let height = 14u16.min(area.height.saturating_sub(4));
+    let width = (area.width * 85 / 100).max(60).min(area.width.saturating_sub(2));
+    let height = (area.height * 85 / 100).max(12).min(area.height.saturating_sub(2));
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     let popup_area = Rect { x, y, width, height };
@@ -1632,8 +1632,8 @@ pub fn render_zshrc_change_modal(frame: &mut Frame, app: &AppState, area: Rect, 
     frame.render_widget(Clear, popup_area);
 
     let title = modal.block.name.as_deref()
-        .map(|n| format!(" \u{26a0} ~/.zshrc changed \u{2014} {n} "))
-        .unwrap_or_else(|| " \u{26a0} ~/.zshrc changed \u{2014} unmanaged block ".to_string());
+        .map(|n| format!(" \u{26a0} New content detected \u{2014} {n} "))
+        .unwrap_or_else(|| " \u{26a0} New content detected \u{2014} unmanaged block ".to_string());
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1645,30 +1645,55 @@ pub fn render_zshrc_change_modal(frame: &mut Frame, app: &AppState, area: Rect, 
 
     if inner.height < 4 { return; }
 
-    let header = Line::from(Span::styled(
-        "New content detected. Choose which version to keep:",
-        Style::default().fg(theme.text),
-    ));
+    let header = Line::from(vec![
+        Span::styled("Choose which version to keep  ", Style::default().fg(theme.text)),
+        Span::styled("[←→] navigate", Style::default().fg(theme.muted)),
+        Span::styled("  [Enter] confirm", Style::default().fg(theme.muted)),
+        Span::styled("  [1/2/3] quick pick", Style::default().fg(theme.muted)),
+    ]);
     frame.render_widget(Paragraph::new(header), Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 });
 
-    let col_w = (inner.width.saturating_sub(2)) / 3;
+    let selected = modal.selected;
+    let content_h = inner.height.saturating_sub(3); // header + hint
+    let col_gap = 1u16;
+    let total_gap = col_gap * 2;
+    let col_w = inner.width.saturating_sub(total_gap) / 3;
 
     let columns: [(u8, &str, Option<&str>); 3] = [
-        (1, "[1] Install script", Some(modal.block.new_content.as_str())),
+        (1, "[1] Install script",  Some(modal.block.new_content.as_str())),
         (2, "[2] clenv canonical", modal.block.canonical_content.as_deref()),
         (3, "[3] My custom config", modal.block.custom_content.as_deref()),
     ];
 
     for (i, (choice, label, content_opt)) in columns.iter().enumerate() {
-        let col_x = inner.x + (col_w + 1) * i as u16;
-        let is_selected = modal.selected == *choice;
-        let border_color = if is_selected { theme.accent } else { theme.muted };
+        let col_x = inner.x + (col_w + col_gap) * i as u16;
+        let is_selected = selected == *choice;
+        let (border_color, border_type) = if is_selected {
+            (theme.accent, BorderType::Double)
+        } else {
+            (theme.muted, BorderType::Rounded)
+        };
+        let title_style = if is_selected {
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.muted)
+        };
 
-        let col_area = Rect { x: col_x, y: inner.y + 1, width: col_w, height: inner.height.saturating_sub(2) };
+        let col_area = Rect { x: col_x, y: inner.y + 1, width: col_w, height: content_h };
+
+        // Store click rect for mouse handling (choices are 1-indexed)
+        app.zshrc_change_column_rects[i] = HitRect {
+            x: col_area.x,
+            y: col_area.y,
+            width: col_area.width,
+            height: col_area.height,
+        };
+
         let col_block = Block::default()
             .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .title(Span::styled(*label, Style::default().fg(border_color).add_modifier(Modifier::BOLD)))
+            .border_type(border_type)
+            .border_style(Style::default().fg(border_color))
+            .title(Span::styled(*label, title_style))
             .style(Style::default().bg(theme.popup_bg));
         let col_inner = col_block.inner(col_area);
         frame.render_widget(col_block, col_area);
@@ -1678,17 +1703,7 @@ pub fn render_zshrc_change_modal(frame: &mut Frame, app: &AppState, area: Rect, 
                 let max_w = col_inner.width as usize;
                 let lines: Vec<Line> = content.lines()
                     .take(col_inner.height as usize)
-                    .map(|l| {
-                        let char_count = l.chars().count();
-                        let truncated = if char_count > max_w && max_w > 0 {
-                            let mut s: String = l.chars().take(max_w.saturating_sub(1)).collect();
-                            s.push('\u{2026}');
-                            s
-                        } else {
-                            l.to_string()
-                        };
-                        Line::from(Span::styled(truncated, Style::default().fg(theme.muted)))
-                    })
+                    .map(|l| highlight_bash_line(l, max_w, theme))
                     .collect();
                 frame.render_widget(Paragraph::new(lines), col_inner);
             } else {
@@ -1699,7 +1714,7 @@ pub fn render_zshrc_change_modal(frame: &mut Frame, app: &AppState, area: Rect, 
             }
         } else {
             frame.render_widget(
-                Paragraph::new(Span::styled("\u{2014} not configured \u{2014}", Style::default().fg(theme.muted))),
+                Paragraph::new(Span::styled("\u{2014} not available \u{2014}", Style::default().fg(theme.muted))),
                 col_inner,
             );
         }
@@ -1708,11 +1723,208 @@ pub fn render_zshrc_change_modal(frame: &mut Frame, app: &AppState, area: Rect, 
     let hint_y = inner.y + inner.height.saturating_sub(1);
     frame.render_widget(
         Paragraph::new(Span::styled(
-            "  Press 1, 2, or 3 to choose   Esc skip (keep file as-is)",
+            "  Click a column to apply it immediately   [Esc] skip (keep file as-is)",
             Style::default().fg(theme.muted),
         )),
         Rect { x: inner.x, y: hint_y, width: inner.width, height: 1 },
     );
+}
+
+/// Syntax-highlight a single line of bash/zsh for display inside the modal.
+fn highlight_bash_line(line: &str, max_w: usize, theme: &Theme) -> Line<'static> {
+    let display: String = if line.chars().count() > max_w && max_w > 0 {
+        let mut s: String = line.chars().take(max_w.saturating_sub(1)).collect();
+        s.push('\u{2026}');
+        s
+    } else {
+        line.to_string()
+    };
+
+    // Full comment line → muted
+    if display.trim_start().starts_with('#') {
+        return Line::from(Span::styled(display, Style::default().fg(theme.muted)));
+    }
+
+    Line::from(bash_colorize(&display, theme))
+}
+
+fn bash_colorize(line: &str, theme: &Theme) -> Vec<Span<'static>> {
+    const KEYWORDS: &[&str] = &[
+        "export", "source", "alias", "eval", "if", "then", "else", "elif", "fi",
+        "for", "do", "done", "while", "function", "return", "local", "unset",
+        "set", "case", "esac", "in", "echo", "printf", "typeset", "declare",
+    ];
+
+    let chars: Vec<char> = line.chars().collect();
+    let n = chars.len();
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut buf = String::new();
+    let mut i = 0usize;
+    let mut in_double = false;
+    let mut in_single = false;
+
+    macro_rules! flush_text {
+        () => {
+            if !buf.is_empty() {
+                spans.push(Span::styled(
+                    std::mem::take(&mut buf),
+                    Style::default().fg(theme.text),
+                ));
+            }
+        };
+    }
+    macro_rules! flush_string {
+        () => {
+            if !buf.is_empty() {
+                spans.push(Span::styled(
+                    std::mem::take(&mut buf),
+                    Style::default().fg(theme.ok),
+                ));
+            }
+        };
+    }
+
+    while i < n {
+        let c = chars[i];
+
+        // ── Inside double-quoted string ────────────────────────────────────────
+        if in_double {
+            if c == '$' {
+                flush_string!();
+                let (sp, skip) = collect_var(&chars, i, theme);
+                spans.push(sp);
+                i += skip;
+                continue;
+            }
+            buf.push(c);
+            if c == '"' && (i == 0 || chars[i - 1] != '\\') {
+                in_double = false;
+                flush_string!();
+            }
+            i += 1;
+            continue;
+        }
+
+        // ── Inside single-quoted string ────────────────────────────────────────
+        if in_single {
+            buf.push(c);
+            if c == '\'' {
+                in_single = false;
+                flush_string!();
+            }
+            i += 1;
+            continue;
+        }
+
+        // ── Normal mode ────────────────────────────────────────────────────────
+        match c {
+            '#' => {
+                // Inline comment: rest of line → muted
+                flush_text!();
+                let comment: String = chars[i..].iter().collect();
+                spans.push(Span::styled(comment, Style::default().fg(theme.muted)));
+                return spans;
+            }
+            '"' => {
+                flush_text!();
+                buf.push(c);
+                in_double = true;
+                i += 1;
+                continue;
+            }
+            '\'' => {
+                flush_text!();
+                buf.push(c);
+                in_single = true;
+                i += 1;
+                continue;
+            }
+            '$' => {
+                flush_text!();
+                let (sp, skip) = collect_var(&chars, i, theme);
+                spans.push(sp);
+                i += skip;
+                continue;
+            }
+            _ => {}
+        }
+
+        // Keyword detection at word boundary
+        let at_boundary = i == 0 || {
+            let p = chars[i - 1];
+            !p.is_alphanumeric() && p != '_'
+        };
+
+        if at_boundary && (c.is_alphabetic() || c == '_') {
+            let mut found = false;
+            for &kw in KEYWORDS {
+                let kw_chars: Vec<char> = kw.chars().collect();
+                let kw_len = kw_chars.len();
+                if i + kw_len <= n && chars[i..i + kw_len] == kw_chars[..] {
+                    let after = if i + kw_len < n { chars[i + kw_len] } else { ' ' };
+                    if !after.is_alphanumeric() && after != '_' {
+                        flush_text!();
+                        spans.push(Span::styled(
+                            kw.to_string(),
+                            Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD),
+                        ));
+                        i += kw_len;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if found { continue; }
+        }
+
+        buf.push(c);
+        i += 1;
+    }
+
+    // Flush any remaining buffer
+    if !buf.is_empty() {
+        let color = if in_double || in_single { theme.ok } else { theme.text };
+        spans.push(Span::styled(buf, Style::default().fg(color)));
+    }
+
+    spans
+}
+
+/// Consume a `$VAR`, `${VAR}`, or `$(...)` starting at `pos` in `chars`.
+/// Returns the colored span and the number of chars consumed.
+fn collect_var(chars: &[char], pos: usize, theme: &Theme) -> (Span<'static>, usize) {
+    let mut var = String::from('$');
+    let mut i = pos + 1;
+
+    if i < chars.len() && chars[i] == '{' {
+        var.push('{');
+        i += 1;
+        while i < chars.len() && chars[i] != '}' {
+            var.push(chars[i]);
+            i += 1;
+        }
+        if i < chars.len() { var.push('}'); i += 1; }
+    } else if i < chars.len() && chars[i] == '(' {
+        var.push('(');
+        i += 1;
+        let mut depth = 1usize;
+        while i < chars.len() && depth > 0 {
+            match chars[i] {
+                '(' => { depth += 1; var.push('('); }
+                ')' => { depth -= 1; if depth > 0 { var.push(')'); } }
+                c => { var.push(c); }
+            }
+            i += 1;
+        }
+        var.push(')');
+    } else {
+        while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
+            var.push(chars[i]);
+            i += 1;
+        }
+    }
+
+    (Span::styled(var, Style::default().fg(theme.accent)), i - pos)
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {

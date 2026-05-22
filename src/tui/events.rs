@@ -318,10 +318,50 @@ pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
 }
 
 fn handle_zshrc_change_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
-    let Some(modal) = &app.zshrc_change_modal else {
+    let Some(modal) = &mut app.zshrc_change_modal else {
         return EventOutcome::Continue;
     };
+
     match key.code {
+        // Left/Right: navigate between columns (1 → 2 → 3, wrapping)
+        KeyCode::Left => {
+            let new = match modal.selected {
+                1 => 3,
+                2 => 1,
+                _ => 2,
+            };
+            modal.selected = new;
+            EventOutcome::Continue
+        }
+        KeyCode::Right => {
+            let new = match modal.selected {
+                1 => 2,
+                2 => 3,
+                _ => 1,
+            };
+            modal.selected = new;
+            EventOutcome::Continue
+        }
+
+        // Enter/Space: confirm the currently highlighted column
+        KeyCode::Enter | KeyCode::Char(' ') => {
+            let choice = modal.selected;
+            let available = match choice {
+                1 => true,
+                2 => modal.block.canonical_content.is_some(),
+                3 => modal.block.custom_content.is_some(),
+                _ => false,
+            };
+            if available {
+                let block = modal.block.clone();
+                app.zshrc_change_modal = None;
+                EventOutcome::ZshrcChangeResolved { choice, block }
+            } else {
+                EventOutcome::Continue
+            }
+        }
+
+        // Number shortcuts: quick-pick and confirm immediately
         KeyCode::Char('1') => {
             let block = modal.block.clone();
             app.zshrc_change_modal = None;
@@ -345,6 +385,7 @@ fn handle_zshrc_change_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
                 EventOutcome::Continue
             }
         }
+
         KeyCode::Esc => {
             app.zshrc_change_modal = None;
             EventOutcome::Continue
@@ -701,6 +742,28 @@ pub fn handle_mouse(mouse: MouseEvent, app: &mut AppState) -> EventOutcome {
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
             let (col, row) = (mouse.column, mouse.row);
+
+            // Zshrc change modal column click → immediate apply
+            if app.zshrc_change_modal.is_some() {
+                for (i, rect) in app.zshrc_change_column_rects.iter().enumerate() {
+                    if rect.contains(col, row) {
+                        let choice = (i as u8) + 1;
+                        let modal = app.zshrc_change_modal.as_ref().unwrap();
+                        let available = match choice {
+                            2 => modal.block.canonical_content.is_some(),
+                            3 => modal.block.custom_content.is_some(),
+                            _ => true,
+                        };
+                        if available {
+                            let block = modal.block.clone();
+                            app.zshrc_change_modal = None;
+                            return EventOutcome::ZshrcChangeResolved { choice, block };
+                        }
+                        return EventOutcome::Continue;
+                    }
+                }
+                return EventOutcome::Continue;
+            }
 
             // Tab manager button toggles the overlay
             if app.tab_manager_rect.contains(col, row) {
