@@ -21,6 +21,11 @@ pub enum EventOutcome {
 }
 
 pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
+    // zshrc change modal intercepts all keys while open
+    if app.zshrc_change_modal.is_some() {
+        return handle_zshrc_change_key(key, app);
+    }
+
     // Base deps warning intercepts all keys until dismissed
     if let Some(overlay) = &app.base_deps_overlay {
         match key.code {
@@ -308,6 +313,42 @@ pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
             EventOutcome::Continue
         }
 
+        _ => EventOutcome::Continue,
+    }
+}
+
+fn handle_zshrc_change_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
+    let Some(modal) = &app.zshrc_change_modal else {
+        return EventOutcome::Continue;
+    };
+    match key.code {
+        KeyCode::Char('1') => {
+            let block = modal.block.clone();
+            app.zshrc_change_modal = None;
+            EventOutcome::ZshrcChangeResolved { choice: 1, block }
+        }
+        KeyCode::Char('2') => {
+            if modal.block.canonical_content.is_some() {
+                let block = modal.block.clone();
+                app.zshrc_change_modal = None;
+                EventOutcome::ZshrcChangeResolved { choice: 2, block }
+            } else {
+                EventOutcome::Continue
+            }
+        }
+        KeyCode::Char('3') => {
+            if modal.block.custom_content.is_some() {
+                let block = modal.block.clone();
+                app.zshrc_change_modal = None;
+                EventOutcome::ZshrcChangeResolved { choice: 3, block }
+            } else {
+                EventOutcome::Continue
+            }
+        }
+        KeyCode::Esc => {
+            app.zshrc_change_modal = None;
+            EventOutcome::Continue
+        }
         _ => EventOutcome::Continue,
     }
 }
