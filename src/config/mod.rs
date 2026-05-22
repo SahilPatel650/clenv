@@ -17,7 +17,25 @@ pub struct Config {
     pub modules: ModulesConfig,
 }
 
+fn default_true() -> bool { true }
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct BlockMeta {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SnippetSource {
+    #[default]
+    ClenvCanonical,
+    PrivateRepo,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModulesConfig {
     #[serde(default)]
     pub enabled: Vec<String>,
@@ -27,6 +45,14 @@ pub struct ModulesConfig {
     pub agent_context_repo: Option<String>,
     #[serde(default)]
     pub zshrc_path: Option<PathBuf>,
+    /// Per-block metadata keyed by block name. Stores descriptions and startup estimates
+    /// for both user-created custom blocks and user overrides of builtin module metadata.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub blocks: std::collections::HashMap<String, BlockMeta>,
+    #[serde(default = "default_true")]
+    pub watch_zshrc: bool,
+    #[serde(default)]
+    pub preferred_snippet_source: SnippetSource,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,6 +67,8 @@ pub struct UiConfig {
     pub default_tab: String,
     pub default_sort: String,
     pub default_sort_dir: String,
+    #[serde(default = "default_true")]
+    pub auto_detect_after_install: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -66,6 +94,7 @@ impl Default for UiConfig {
             default_tab: "All".to_string(),
             default_sort: "size".to_string(),
             default_sort_dir: "desc".to_string(),
+            auto_detect_after_install: true,
         }
     }
 }
@@ -76,6 +105,20 @@ impl Default for SessionState {
             last_tab: "All".to_string(),
             last_sort: "size".to_string(),
             last_scroll: 0,
+        }
+    }
+}
+
+impl Default for ModulesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: vec![],
+            private_dotfiles_repo: None,
+            agent_context_repo: None,
+            zshrc_path: None,
+            blocks: std::collections::HashMap::new(),
+            watch_zshrc: true,
+            preferred_snippet_source: SnippetSource::ClenvCanonical,
         }
     }
 }
@@ -157,6 +200,33 @@ mod tests {
             assert_eq!(config.ui.default_sort, "size");
             assert_eq!(config.scan.depth_limit, 10);
         }
+    }
+
+    #[test]
+    fn new_ui_config_fields_have_defaults() {
+        let cfg = UiConfig::default();
+        assert!(cfg.auto_detect_after_install);
+    }
+
+    #[test]
+    fn new_modules_config_fields_have_defaults() {
+        let cfg = ModulesConfig::default();
+        assert!(cfg.watch_zshrc);
+        assert_eq!(cfg.preferred_snippet_source, SnippetSource::ClenvCanonical);
+    }
+
+    #[test]
+    fn snippet_source_roundtrips_toml() {
+        let cfg = Config {
+            modules: ModulesConfig {
+                preferred_snippet_source: SnippetSource::PrivateRepo,
+                ..Default::default()
+            },
+            ..Config::default()
+        };
+        let s = toml::to_string_pretty(&cfg).unwrap();
+        let back: Config = toml::from_str(&s).unwrap();
+        assert_eq!(back.modules.preferred_snippet_source, SnippetSource::PrivateRepo);
     }
 
     #[test]
