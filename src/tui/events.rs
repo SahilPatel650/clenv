@@ -17,6 +17,7 @@ pub enum EventOutcome {
     SaveSettings,
     OpenSettings,
     MoveBlock { from_idx: usize, to_idx: usize },
+    ZshrcChangeResolved { choice: u8, block: crate::tui::app::ChangedBlock },
 }
 
 pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {

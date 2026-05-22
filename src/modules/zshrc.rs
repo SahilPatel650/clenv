@@ -394,6 +394,12 @@ mod tests {
     }
 
     #[test]
+    fn parse_segments_returns_empty_for_missing_file() {
+        let result = parse_segments(std::path::Path::new("/tmp/does_not_exist_clenv_test.zshrc"));
+        assert!(result.is_empty());
+    }
+
+    #[test]
     fn write_block_at_inserts_after_named_block() {
         let zshrc = write_tmp(
             "# [clenv: first]\necho first\n# [/clenv: first]\n"
