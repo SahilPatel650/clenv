@@ -1,5 +1,6 @@
-use super::{Module, ModuleStatus};
+use super::{BlockDiff, DiffLine, DiffLineKind, Module, ModuleStatus};
 use super::zshrc;
+use similar::{ChangeTag, TextDiff};
 use std::path::Path;
 use std::process::Command;
 
@@ -39,6 +40,96 @@ pub fn missing_deps<'a>(module: &'a Module, all_modules: &[Module]) -> Vec<Strin
         })
         .cloned()
         .collect()
+}
+
+/// Compare the canonical TOML snippet against what is currently in .zshrc.
+/// Returns None if the content is identical or the block is not present.
+pub fn compute_block_diff(canonical: &str, current: &str) -> Option<BlockDiff> {
+    let a = canonical.trim();
+    let b = current.trim();
+    if a == b {
+        return None;
+    }
+
+    let text_diff = TextDiff::from_lines(a, b);
+    let changes: Vec<_> = text_diff.iter_all_changes().collect();
+
+    let mut lines: Vec<DiffLine> = Vec::new();
+    let mut i = 0usize;
+
+    while i < changes.len() {
+        let ch = &changes[i];
+        match ch.tag() {
+            ChangeTag::Equal => {
+                let text = ch.value().trim_end_matches('\n').to_string();
+                lines.push(DiffLine {
+                    kind: DiffLineKind::Equal,
+                    spans: vec![(text, false)],
+                });
+                i += 1;
+            }
+            ChangeTag::Delete => {
+                // Look ahead: if next change is an Insert, do word-level diff
+                if i + 1 < changes.len() && changes[i + 1].tag() == ChangeTag::Insert {
+                    let old = changes[i].value().trim_end_matches('\n');
+                    let new = changes[i + 1].value().trim_end_matches('\n');
+                    let wd = TextDiff::from_words(old, new);
+                    let mut rem_spans: Vec<(String, bool)> = Vec::new();
+                    let mut add_spans: Vec<(String, bool)> = Vec::new();
+                    for wch in wd.iter_all_changes() {
+                        let t = wch.value().to_string();
+                        match wch.tag() {
+                            ChangeTag::Equal => {
+                                rem_spans.push((t.clone(), false));
+                                add_spans.push((t, false));
+                            }
+                            ChangeTag::Delete => rem_spans.push((t, true)),
+                            ChangeTag::Insert => add_spans.push((t, true)),
+                        }
+                    }
+                    lines.push(DiffLine { kind: DiffLineKind::Removed, spans: rem_spans });
+                    lines.push(DiffLine { kind: DiffLineKind::Added, spans: add_spans });
+                    i += 2;
+                } else {
+                    let text = ch.value().trim_end_matches('\n').to_string();
+                    lines.push(DiffLine {
+                        kind: DiffLineKind::Removed,
+                        spans: vec![(text, true)],
+                    });
+                    i += 1;
+                }
+            }
+            ChangeTag::Insert => {
+                let text = ch.value().trim_end_matches('\n').to_string();
+                lines.push(DiffLine {
+                    kind: DiffLineKind::Added,
+                    spans: vec![(text, true)],
+                });
+                i += 1;
+            }
+        }
+    }
+
+    Some(BlockDiff { lines })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compute_block_diff_returns_none_when_identical() {
+        let snippet = "export FOO=bar";
+        assert!(compute_block_diff(snippet, snippet).is_none());
+    }
+
+    #[test]
+    fn compute_block_diff_with_custom_source_uses_provided_canonical() {
+        let custom = "export FOO=custom";
+        let current = "export FOO=different";
+        let diff = compute_block_diff(custom, current);
+        assert!(diff.is_some());
+    }
 }
 
 /// Derive the full ModuleStatus for a module.

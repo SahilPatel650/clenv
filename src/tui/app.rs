@@ -9,6 +9,34 @@ pub struct BaseDepsOverlay {
     pub pending_name: String,
 }
 
+// ── Shell tab new-block overlay ───────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum NewBlockFocus {
+    Name,
+    Description,
+    Position,
+}
+
+#[derive(Debug, Clone)]
+pub struct PositionItem {
+    /// Display label (e.g. "clenv: nvm" or "[unmanaged block]" or "[end of file]")
+    pub label: String,
+    /// If Some, insert after this block's close marker; if None, append at end.
+    pub after_block: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewBlockOverlay {
+    pub name: String,
+    pub description: String,
+    pub focus: NewBlockFocus,
+    /// All position options (insertion points in file order, last = end).
+    pub position_items: Vec<PositionItem>,
+    /// Current selection in position_items.
+    pub position_cursor: usize,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct HitRect {
     pub x: u16,
@@ -77,22 +105,31 @@ impl Tab {
 
 pub struct ShellTabState {
     pub entries: Vec<crate::modules::ModuleEntry>,
+    /// Unmanaged blocks parsed from .zshrc (content between clenv-managed blocks).
+    pub unmanaged: Vec<crate::modules::UnmanagedBlock>,
+    /// Cursor in the navigable items list. Navigable items = entries + unmanaged, interleaved.
     pub cursor: usize,
     pub scroll_offset: usize,
     pub item_rects: Vec<HitRect>,
     pub pending_enabled: HashMap<String, bool>,
     pub private_repo_last_sync: Option<std::time::SystemTime>,
+    pub new_block_overlay: Option<NewBlockOverlay>,
+    /// Whether the detail panel is in "expanded" (diff) view.
+    pub detail_expanded: bool,
 }
 
 impl Default for ShellTabState {
     fn default() -> Self {
         Self {
             entries: Vec::new(),
+            unmanaged: Vec::new(),
             cursor: 0,
             scroll_offset: 0,
             item_rects: Vec::new(),
             pending_enabled: HashMap::new(),
             private_repo_last_sync: None,
+            new_block_overlay: None,
+            detail_expanded: false,
         }
     }
 }
@@ -413,30 +450,117 @@ impl AppState {
         }
     }
 
-    pub fn load_shell_modules(&mut self, config: &crate::config::ModulesConfig) {
-        let zshrc_path = config.zshrc_path.clone()
+    pub fn load_shell_modules(&mut self, config: &crate::config::Config) {
+        let modules_cfg = &config.modules;
+        let zshrc_path = modules_cfg.zshrc_path.clone()
             .unwrap_or_else(|| self.home_dir.join(".zshrc"));
 
-        let modules = crate::modules::load_builtin_modules();
+        let builtins = crate::modules::load_builtin_modules();
+        let builtin_names: std::collections::HashSet<&str> =
+            builtins.iter().map(|m| m.name.as_str()).collect();
 
-        self.shell.entries = modules.iter()
+        // Preserve expand state from previous load
+        let prev_expanded: std::collections::HashMap<String, bool> = self.shell.entries
+            .iter()
+            .map(|e| (e.definition.name.clone(), e.expanded))
+            .collect();
+
+        // Build entries for builtin modules
+        let mut entries: Vec<crate::modules::ModuleEntry> = builtins.iter()
             .map(|module| {
                 let status = crate::modules::detect::module_status(module, &zshrc_path);
-                let enabled = config.enabled.contains(&module.name);
+                let enabled = modules_cfg.enabled.contains(&module.name);
                 let can_install = crate::modules::detect::has_install_for_platform(module);
-                let missing_deps = crate::modules::detect::missing_deps(module, &modules);
+                let missing_deps = crate::modules::detect::missing_deps(module, &builtins);
+
+                let block_diff = if status == crate::modules::ModuleStatus::ManagedActive {
+                    crate::modules::zshrc::read_block(&zshrc_path, &module.name)
+                        .and_then(|current| {
+                            let canonical = match &modules_cfg.preferred_snippet_source {
+                                crate::config::SnippetSource::PrivateRepo => {
+                                    let private_path = self.home_dir
+                                        .join(".config/clenv/private")
+                                        .join(format!("{}.zsh", module.name));
+                                    std::fs::read_to_string(&private_path)
+                                        .unwrap_or_else(|_| module.zshrc.snippet.clone())
+                                }
+                                crate::config::SnippetSource::ClenvCanonical => {
+                                    module.zshrc.snippet.clone()
+                                }
+                            };
+                            crate::modules::detect::compute_block_diff(
+                                canonical.trim(),
+                                &current,
+                            )
+                        })
+                } else {
+                    None
+                };
+
                 crate::modules::ModuleEntry {
                     definition: module.clone(),
                     status,
                     enabled,
                     can_install,
                     missing_deps,
+                    block_diff,
+                    expanded: *prev_expanded.get(&module.name).unwrap_or(&false),
                 }
             })
             .collect();
 
-        // Sort to match the visual category order in render_shell_tab so that
-        // cursor arithmetic (cursor+1 / cursor-1) moves in the displayed order.
+        // Discover custom blocks: clenv-managed segments whose name isn't a builtin
+        let segments = crate::modules::zshrc::parse_segments(&zshrc_path);
+        for seg in &segments {
+            if let crate::modules::zshrc::SegmentKind::Clenv(name) = &seg.kind {
+                if builtin_names.contains(name.as_str()) {
+                    continue;
+                }
+                let meta = modules_cfg.blocks.get(name);
+                let description = meta
+                    .and_then(|m| m.description.as_deref())
+                    .unwrap_or("")
+                    .to_string();
+                let startup_ms = meta.and_then(|m| m.startup_ms).unwrap_or(0);
+                let custom_module = crate::modules::Module {
+                    name: name.clone(),
+                    description,
+                    category: "custom".to_string(),
+                    zshrc: crate::modules::ZshrcSpec {
+                        snippet: String::new(),
+                        startup_ms_estimate: startup_ms,
+                        order: 999,
+                        user_extend: None,
+                    },
+                    detect: crate::modules::DetectSpec { commands: vec![] },
+                    install: None,
+                    depends_on: vec![],
+                };
+                entries.push(crate::modules::ModuleEntry {
+                    status: crate::modules::ModuleStatus::ManagedActive,
+                    enabled: modules_cfg.enabled.contains(name),
+                    can_install: false,
+                    missing_deps: vec![],
+                    block_diff: None,
+                    expanded: *prev_expanded.get(name).unwrap_or(&false),
+                    definition: custom_module,
+                });
+            }
+        }
+
+        // Parse unmanaged blocks from .zshrc
+        self.shell.unmanaged = segments.iter()
+            .filter(|s| matches!(s.kind, crate::modules::zshrc::SegmentKind::Unmanaged))
+            .enumerate()
+            .map(|(i, seg)| crate::modules::UnmanagedBlock {
+                index: i,
+                line_count: seg.content.lines().count(),
+                expanded: false,
+                content: seg.content.clone(),
+            })
+            .collect();
+
+        // Sort entries: known categories first, then "custom" at the end
         const CATEGORY_ORDER: &[&str] = &[
             "package-managers",
             "shell-frameworks",
@@ -444,14 +568,17 @@ impl AppState {
             "zsh-plugins",
             "productivity",
             "aliases",
+            "custom",
         ];
-        self.shell.entries.sort_by_key(|e| {
+        entries.sort_by_key(|e| {
             let rank = CATEGORY_ORDER
                 .iter()
                 .position(|c| *c == e.definition.category.as_str())
                 .unwrap_or(CATEGORY_ORDER.len());
             (rank, e.definition.name.clone())
         });
+
+        self.shell.entries = entries;
 
         for entry in &self.shell.entries {
             self.shell.pending_enabled.insert(
@@ -461,8 +588,26 @@ impl AppState {
         }
     }
 
+
+    /// Total navigable items in the Shell tab: unmanaged blocks first, then entries.
+    pub fn shell_nav_count(&self) -> usize {
+        self.shell.unmanaged.len() + self.shell.entries.len()
+    }
+
+    /// Returns the selected module entry if cursor is in the entries section.
     pub fn selected_module(&self) -> Option<&crate::modules::ModuleEntry> {
-        self.shell.entries.get(self.shell.cursor)
+        let unmanaged_len = self.shell.unmanaged.len();
+        if self.shell.cursor < unmanaged_len { return None; }
+        self.shell.entries.get(self.shell.cursor - unmanaged_len)
+    }
+
+    /// Returns the selected unmanaged block if cursor is in the unmanaged section.
+    pub fn selected_unmanaged(&self) -> Option<&crate::modules::UnmanagedBlock> {
+        if self.shell.cursor < self.shell.unmanaged.len() {
+            self.shell.unmanaged.get(self.shell.cursor)
+        } else {
+            None
+        }
     }
 }
 
