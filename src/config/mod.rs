@@ -3,6 +3,7 @@ pub mod claude_md;
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,8 +48,8 @@ pub struct ModulesConfig {
     pub zshrc_path: Option<PathBuf>,
     /// Per-block metadata keyed by block name. Stores descriptions and startup estimates
     /// for both user-created custom blocks and user overrides of builtin module metadata.
-    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
-    pub blocks: std::collections::HashMap<String, BlockMeta>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub blocks: HashMap<String, BlockMeta>,
     #[serde(default = "default_true")]
     pub watch_zshrc: bool,
     #[serde(default)]
@@ -116,7 +117,7 @@ impl Default for ModulesConfig {
             private_dotfiles_repo: None,
             agent_context_repo: None,
             zshrc_path: None,
-            blocks: std::collections::HashMap::new(),
+            blocks: HashMap::new(),
             watch_zshrc: true,
             preferred_snippet_source: SnippetSource::ClenvCanonical,
         }
@@ -213,6 +214,13 @@ mod tests {
         let cfg = ModulesConfig::default();
         assert!(cfg.watch_zshrc);
         assert_eq!(cfg.preferred_snippet_source, SnippetSource::ClenvCanonical);
+    }
+
+    #[test]
+    fn watch_zshrc_false_roundtrips_toml() {
+        let toml_str = "[modules]\nwatch_zshrc = false\n";
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        assert!(!cfg.modules.watch_zshrc);
     }
 
     #[test]
