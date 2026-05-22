@@ -103,6 +103,13 @@ impl Tab {
 
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ShellPage {
+    #[default]
+    Modules,
+    FileOrder,
+}
+
 pub struct ShellTabState {
     pub entries: Vec<crate::modules::ModuleEntry>,
     /// Unmanaged blocks parsed from .zshrc (content between clenv-managed blocks).
@@ -116,6 +123,9 @@ pub struct ShellTabState {
     pub new_block_overlay: Option<NewBlockOverlay>,
     /// Whether the detail panel is in "expanded" (diff) view.
     pub detail_expanded: bool,
+    pub page: ShellPage,
+    pub fileorder_cursor: usize,
+    pub moving_block: Option<usize>,
 }
 
 impl Default for ShellTabState {
@@ -130,6 +140,9 @@ impl Default for ShellTabState {
             private_repo_last_sync: None,
             new_block_overlay: None,
             detail_expanded: false,
+            page: ShellPage::Modules,
+            fileorder_cursor: 0,
+            moving_block: None,
         }
     }
 }
@@ -784,5 +797,11 @@ mod tests {
         assert_eq!(SettingsTab::Shell.prev(), SettingsTab::Ui);
         assert_eq!(SettingsTab::Ui.prev(), SettingsTab::Scan);
         assert_eq!(SettingsTab::Scan.prev(), SettingsTab::Shell);
+    }
+
+    #[test]
+    fn shell_page_defaults_to_modules() {
+        let app = AppState::new(vec![], "All", "size");
+        assert_eq!(app.shell.page, ShellPage::Modules);
     }
 }

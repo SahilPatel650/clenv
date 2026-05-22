@@ -16,6 +16,7 @@ pub enum EventOutcome {
     CreateBlock { name: String, description: String, after_block: Option<String> },
     SaveSettings,
     OpenSettings,
+    MoveBlock { from_idx: usize, to_idx: usize },
 }
 
 pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
@@ -66,6 +67,16 @@ pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
         // New block overlay intercepts all keys
         if app.shell.new_block_overlay.is_some() {
             return handle_new_block_key(key, app);
+        }
+
+        // File Order page gets its own handler (Task 13 adds full handling)
+        if app.shell.page == crate::tui::app::ShellPage::FileOrder {
+            return handle_fileorder_key(key, app);
+        }
+        // Modules page: right arrow switches to File Order
+        if key.code == KeyCode::Right {
+            app.shell.page = crate::tui::app::ShellPage::FileOrder;
+            return EventOutcome::Continue;
         }
 
         match key.code {
@@ -493,6 +504,89 @@ fn handle_new_block_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
             }
         }
         _ => {}
+    }
+    EventOutcome::Continue
+}
+
+fn handle_fileorder_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
+    use crate::modules::zshrc::parse_segments;
+    let zshrc_path = app.home_dir.join(".zshrc");
+    let seg_count = parse_segments(&zshrc_path).len();
+
+    if let Some(from) = app.shell.moving_block {
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                if app.shell.fileorder_cursor > 0 {
+                    app.shell.fileorder_cursor -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if app.shell.fileorder_cursor + 1 < seg_count {
+                    app.shell.fileorder_cursor += 1;
+                }
+            }
+            KeyCode::Enter => {
+                let to_idx = app.shell.fileorder_cursor;
+                app.shell.moving_block = None;
+                if from != to_idx {
+                    return EventOutcome::MoveBlock { from_idx: from, to_idx };
+                }
+            }
+            KeyCode::Esc => {
+                app.shell.moving_block = None;
+                app.shell.fileorder_cursor = from;
+            }
+            _ => {}
+        }
+        return EventOutcome::Continue;
+    }
+
+    match key.code {
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.shell.fileorder_cursor > 0 {
+                app.shell.fileorder_cursor -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.shell.fileorder_cursor + 1 < seg_count {
+                app.shell.fileorder_cursor += 1;
+            }
+        }
+        KeyCode::Enter => {
+            app.shell.moving_block = Some(app.shell.fileorder_cursor);
+        }
+        KeyCode::Char('l') => {
+            return handle_fileorder_label_key(app);
+        }
+        KeyCode::Left => {
+            app.shell.page = crate::tui::app::ShellPage::Modules;
+        }
+        KeyCode::Right => {}
+        KeyCode::Char('q') => return EventOutcome::Quit,
+        KeyCode::Tab => app.next_tab(),
+        KeyCode::BackTab => app.prev_tab(),
+        KeyCode::Char('?') => app.show_help = !app.show_help,
+        _ => {}
+    }
+    EventOutcome::Continue
+}
+
+fn handle_fileorder_label_key(app: &mut AppState) -> EventOutcome {
+    use crate::modules::zshrc::{parse_segments, SegmentKind};
+    let zshrc_path = app.home_dir.join(".zshrc");
+    let segments = parse_segments(&zshrc_path);
+    if let Some(seg) = segments.get(app.shell.fileorder_cursor) {
+        if matches!(seg.kind, SegmentKind::Unmanaged) {
+            let position_items = build_new_block_positions(app);
+            let last = position_items.len().saturating_sub(1);
+            app.shell.new_block_overlay = Some(crate::tui::app::NewBlockOverlay {
+                name: String::new(),
+                description: String::new(),
+                focus: crate::tui::app::NewBlockFocus::Name,
+                position_cursor: last,
+                position_items,
+            });
+        }
     }
     EventOutcome::Continue
 }

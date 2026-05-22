@@ -98,14 +98,20 @@ pub fn render(frame: &mut Frame, app: &mut AppState, config: &crate::config::Con
         let shell_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(5),
+                Constraint::Length(1), // sub-tab bar
+                Constraint::Min(5),    // content
                 Constraint::Length(detail_h),
-                Constraint::Length(1),
+                Constraint::Length(1), // status bar
             ])
             .split(below_tabs);
-        render_shell_tab(frame, app, shell_chunks[0], &theme);
-        render_shell_detail(frame, app, shell_chunks[1], &theme);
-        render_status_bar(frame, app, shell_chunks[2], &theme);
+        render_shell_subtab_bar(frame, app, shell_chunks[0], &theme);
+        if app.shell.page == crate::tui::app::ShellPage::Modules {
+            render_shell_tab(frame, app, shell_chunks[1], &theme);
+        } else {
+            render_shell_fileorder(frame, app, shell_chunks[1], &theme);
+        }
+        render_shell_detail(frame, app, shell_chunks[2], &theme);
+        render_status_bar(frame, app, shell_chunks[3], &theme);
     } else {
         render_sort_bar(frame, app, chunks[1], &theme);
         render_table(frame, app, chunks[2], &theme);
@@ -454,15 +460,144 @@ fn render_status_bar(frame: &mut Frame, app: &AppState, area: Rect, theme: &Them
             Style::default().fg(theme.highlight),
         )
     } else if app.active_tab == Tab::Shell {
-        Span::raw(
-            "[Enter/i] install  [Space] expand/diff  [d] disable  [n] new block  [c] AI context  [r] sync  [?] help  [q] quit",
-        )
+        if app.shell.page == crate::tui::app::ShellPage::FileOrder {
+            if app.shell.moving_block.is_some() {
+                Span::styled(
+                    "MOVING — [↑↓] reposition  [Enter] drop  [Esc] cancel",
+                    Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+                )
+            } else {
+                Span::raw("[↑↓] navigate  [Enter] grab  [l] label  [◀▶] switch page  [?] help")
+            }
+        } else {
+            Span::raw(
+                "[Enter/i] install  [Space] expand  [d] disable  [n] new block  [c] AI context  [r] sync  [?] help  [q] quit",
+            )
+        }
     } else {
         Span::raw(
             "[d] delete  [c] cache  [a] activate  [y] copy  [r] refresh  [/] search  [2] shell  [?] help  [q] quit",
         )
     };
     frame.render_widget(Paragraph::new(Line::from(msg)), area);
+}
+
+fn render_shell_subtab_bar(frame: &mut Frame, app: &AppState, area: Rect, theme: &Theme) {
+    use crate::tui::app::ShellPage;
+    let modules_style = if app.shell.page == ShellPage::Modules {
+        Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    } else {
+        Style::default().fg(theme.muted)
+    };
+    let fileorder_style = if app.shell.page == ShellPage::FileOrder {
+        Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    } else {
+        Style::default().fg(theme.muted)
+    };
+    let spans = vec![
+        Span::styled(" Modules ", modules_style),
+        Span::styled("│", Style::default().fg(theme.muted)),
+        Span::styled(" File Order ", fileorder_style),
+        Span::styled("  ◀▶ switch", Style::default().fg(theme.muted)),
+    ];
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+fn render_shell_fileorder(frame: &mut Frame, app: &mut AppState, area: Rect, theme: &Theme) {
+    use crate::modules::zshrc::{parse_segments, SegmentKind};
+
+    let zshrc_path = app.home_dir.join(".zshrc");
+    let segments = parse_segments(&zshrc_path);
+
+    let block = Block::default().borders(Borders::TOP | Borders::BOTTOM);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if inner.height == 0 { return; }
+
+    let total = segments.len();
+    let cursor = app.shell.fileorder_cursor.min(total.saturating_sub(1));
+    let moving = app.shell.moving_block;
+
+    // Clamp scroll
+    if cursor < app.shell.scroll_offset {
+        app.shell.scroll_offset = cursor;
+    }
+    if cursor >= app.shell.scroll_offset + inner.height as usize {
+        app.shell.scroll_offset = cursor + 1 - inner.height as usize;
+    }
+    let scroll = app.shell.scroll_offset;
+
+    let mut row_y = inner.y;
+
+    let drop_before = if moving.is_some() { Some(cursor) } else { None };
+
+    for (seg_idx, seg) in segments.iter().enumerate() {
+        if row_y >= inner.y + inner.height { break; }
+
+        // Drop zone above this segment when in move mode
+        if let Some(target) = drop_before {
+            if seg_idx == target && seg_idx != moving.unwrap_or(usize::MAX) {
+                if seg_idx >= scroll {
+                    let dz_area = Rect { x: inner.x, y: row_y, width: inner.width, height: 1 };
+                    frame.render_widget(
+                        Paragraph::new(Span::styled(
+                            "  ── drop here ──",
+                            Style::default().fg(theme.accent),
+                        )),
+                        dz_area,
+                    );
+                    row_y += 1;
+                }
+            }
+        }
+
+        if seg_idx < scroll { continue; }
+        if row_y >= inner.y + inner.height { break; }
+
+        let is_cursor = seg_idx == cursor;
+        let is_moving = moving == Some(seg_idx);
+
+        let (indicator, name, extra) = match &seg.kind {
+            SegmentKind::Clenv(name) => {
+                let status = app.shell.entries.iter()
+                    .find(|e| &e.definition.name == name)
+                    .map(|e| e.status.label())
+                    .unwrap_or("custom");
+                ("✓", name.as_str(), status.to_string())
+            }
+            SegmentKind::Unmanaged => {
+                let lines = seg.content.lines().count();
+                ("~", "unmanaged", format!("{lines} lines"))
+            }
+        };
+
+        let style = if is_moving {
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+        } else if is_cursor {
+            Style::default().add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default().fg(theme.text)
+        };
+
+        let prefix = if is_moving { "▶▶" } else { "  " };
+        let display = format!("{prefix} #{seg_idx:<2} [{indicator}] {name:<22} {extra}");
+
+        let row_area = Rect { x: inner.x, y: row_y, width: inner.width, height: 1 };
+        frame.render_widget(Paragraph::new(Span::styled(display, style)), row_area);
+        row_y += 1;
+    }
+
+    // Drop zone at end (after all segments)
+    if let Some(target) = drop_before {
+        if target == total && row_y < inner.y + inner.height {
+            let dz_area = Rect { x: inner.x, y: row_y, width: inner.width, height: 1 };
+            frame.render_widget(
+                Paragraph::new(Span::styled("  ── drop here (end) ──", Style::default().fg(theme.accent))),
+                dz_area,
+            );
+        }
+    }
 }
 
 fn render_shell_tab(frame: &mut Frame, app: &mut AppState, area: Rect, theme: &Theme) {
