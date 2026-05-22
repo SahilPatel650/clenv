@@ -39,7 +39,7 @@ pub fn run(
     );
     app.scroll_offset = config.session.last_scroll;
     app.rescanning = rescanning;
-    app.load_shell_modules(&config.modules);
+    app.load_shell_modules(config);
 
     if first_run {
         app.onboarding = Some(onboarding::OnboardingState::new(
@@ -241,7 +241,12 @@ fn event_loop<B: ratatui::backend::Backend>(
 
                                 if ready_to_enable {
                                     if !module.zshrc.snippet.is_empty() {
-                                        let _ = crate::modules::zshrc::write_block(&zshrc_path, &module.name, &module.zshrc.snippet);
+                                        let _ = crate::modules::zshrc::write_block(
+                                            &zshrc_path,
+                                            &module.name,
+                                            &module.zshrc.snippet,
+                                        );
+                                        app.zshrc_modified_this_session = true;
                                     }
                                     if !config.modules.enabled.contains(&module.name) {
                                         config.modules.enabled.push(module.name.clone());
@@ -251,16 +256,19 @@ fn event_loop<B: ratatui::backend::Backend>(
                                 } else {
                                     app.status_message = Some(format!("✗ {name} install failed"));
                                 }
-                                app.load_shell_modules(&config.modules);
+                                if config.ui.auto_detect_after_install {
+                                    app.load_shell_modules(config);
+                                }
                             }
                         }
                         EventOutcome::DisableModule(name) => {
                             let zshrc_path = config.modules.zshrc_path.clone()
                                 .unwrap_or_else(|| app.home_dir.join(".zshrc"));
                             let _ = crate::modules::zshrc::remove_block(&zshrc_path, &name);
+                            app.zshrc_modified_this_session = true;
                             config.modules.enabled.retain(|n| n != &name);
                             let _ = crate::config::save(config);
-                            app.load_shell_modules(&config.modules);
+                            app.load_shell_modules(config);
                             app.status_message = Some(format!("✓ {name} disabled — reload your shell"));
                         }
                         EventOutcome::CopyShellContext => {
@@ -326,6 +334,27 @@ fn event_loop<B: ratatui::backend::Backend>(
                                     "No private repo configured \u{2014} add private_dotfiles_repo to config.toml".to_string()
                                 );
                             }
+                        }
+                        EventOutcome::CreateBlock { name, description, after_block } => {
+                            let zshrc_path = config.modules.zshrc_path.clone()
+                                .unwrap_or_else(|| app.home_dir.join(".zshrc"));
+                            let _ = crate::modules::zshrc::write_block_at(
+                                &zshrc_path,
+                                &name,
+                                &format!("# (add your configuration for {name} here)"),
+                                after_block.as_deref(),
+                            );
+                            app.zshrc_modified_this_session = true;
+                            // Store metadata in config so the block shows up with its description
+                            config.modules.blocks.insert(name.clone(), crate::config::BlockMeta {
+                                description: if description.is_empty() { None } else { Some(description.clone()) },
+                                startup_ms: None,
+                            });
+                            let _ = crate::config::save(config);
+                            app.load_shell_modules(config);
+                            app.status_message = Some(format!(
+                                "Created block '{name}' — add your config in ~/.zshrc"
+                            ));
                         }
                         EventOutcome::Continue => {}
                     }

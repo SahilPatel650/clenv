@@ -203,6 +203,7 @@ pub struct AppState {
     pub shell: ShellTabState,
     pub base_deps_overlay: Option<BaseDepsOverlay>,
     pub base_deps_checked: bool,
+    pub zshrc_modified_this_session: bool,
 }
 
 impl AppState {
@@ -251,6 +252,7 @@ impl AppState {
             shell: ShellTabState::default(),
             base_deps_overlay: None,
             base_deps_checked: false,
+            zshrc_modified_this_session: false,
         }
     }
 
@@ -676,6 +678,12 @@ mod tests {
         app.active_tab = Tab::Shell; // last tab
         app.next_tab();
         assert_eq!(app.active_tab, Tab::All);
+    }
+
+    #[test]
+    fn zshrc_modified_starts_false() {
+        let app = AppState::new(vec![], "All", "size");
+        assert!(!app.zshrc_modified_this_session);
     }
 
     #[test]
