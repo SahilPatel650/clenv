@@ -1,5 +1,5 @@
 use crate::actions;
-use crate::tui::app::{AppState, SortField, Tab};
+use crate::tui::app::{AppState, NewBlockFocus, NewBlockOverlay, PositionItem, SortField, Tab};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use humansize::{format_size, BINARY};
 
@@ -13,6 +13,9 @@ pub enum EventOutcome {
     DisableModule(String),
     CopyShellContext,
     SyncPrivateRepo,
+    CreateBlock { name: String, description: String, after_block: Option<String> },
+    SaveSettings,
+    OpenSettings,
 }
 
 pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
@@ -30,6 +33,10 @@ pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
             }
         }
         return EventOutcome::Continue;
+    }
+
+    if app.show_settings {
+        return handle_settings_key(key, app);
     }
 
     if app.onboarding.is_some() {
@@ -56,6 +63,11 @@ pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
     }
 
     if app.active_tab == Tab::Shell {
+        // New block overlay intercepts all keys
+        if app.shell.new_block_overlay.is_some() {
+            return handle_new_block_key(key, app);
+        }
+
         match key.code {
             KeyCode::Char('1') => {
                 app.active_tab = Tab::All;
@@ -66,15 +78,20 @@ pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
                 if app.shell.cursor > 0 {
                     app.shell.cursor -= 1;
                 }
-                // scroll_offset is a flat-list index (includes headers); let render handle it
+                app.shell.detail_expanded = false;
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                if app.shell.cursor + 1 < app.shell.entries.len() {
+                if app.shell.cursor + 1 < app.shell_nav_count() {
                     app.shell.cursor += 1;
                 }
-                // scroll_offset is a flat-list index (includes headers); let render handle it
+                app.shell.detail_expanded = false;
             }
-            KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Char('i') => {
+            // Space = toggle expanded detail panel (shows diff if modified)
+            KeyCode::Char(' ') => {
+                app.shell.detail_expanded = !app.shell.detail_expanded;
+            }
+            // Enter / i = install or disable
+            KeyCode::Enter | KeyCode::Char('i') => {
                 if let Some(entry) = app.selected_module() {
                     if !entry.missing_deps.is_empty() {
                         let missing = entry.missing_deps.join(", ");
@@ -107,6 +124,18 @@ pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
                     return EventOutcome::DisableModule(name);
                 }
             }
+            KeyCode::Char('n') => {
+                // Open new-block overlay
+                let position_items = build_new_block_positions(app);
+                let last = position_items.len().saturating_sub(1);
+                app.shell.new_block_overlay = Some(NewBlockOverlay {
+                    name: String::new(),
+                    description: String::new(),
+                    focus: NewBlockFocus::Name,
+                    position_cursor: last,
+                    position_items,
+                });
+            }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 return EventOutcome::Quit;
             }
@@ -114,9 +143,13 @@ pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
             KeyCode::Char('r') => return EventOutcome::SyncPrivateRepo,
             KeyCode::Esc => {
                 app.status_message = None;
+                app.shell.detail_expanded = false;
             }
             KeyCode::Char('?') => {
                 app.show_help = !app.show_help;
+            }
+            KeyCode::Char('.') => {
+                app.show_settings = true;
             }
             KeyCode::Char('q') => return EventOutcome::Quit,
             KeyCode::Tab => app.next_tab(),
@@ -196,6 +229,11 @@ pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
 
         KeyCode::Char('?') => {
             app.show_help = !app.show_help;
+            EventOutcome::Continue
+        }
+
+        KeyCode::Char('.') => {
+            app.show_settings = true;
             EventOutcome::Continue
         }
 
@@ -371,6 +409,158 @@ fn handle_tab_manager_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
     EventOutcome::Continue
 }
 
+/// Build position items for the new-block overlay from the current .zshrc segments.
+fn build_new_block_positions(app: &AppState) -> Vec<PositionItem> {
+    // We derive positions from the managed entries that are active (have blocks)
+    // plus a final "end of file" option.
+    let mut items: Vec<PositionItem> = app.shell.entries.iter()
+        .filter(|e| e.status == crate::modules::ModuleStatus::ManagedActive)
+        .map(|e| PositionItem {
+            label: format!("after clenv: {}", e.definition.name),
+            after_block: Some(e.definition.name.clone()),
+        })
+        .collect();
+    items.push(PositionItem {
+        label: "[end of file]".to_string(),
+        after_block: None,
+    });
+    items
+}
+
+fn handle_new_block_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
+    if app.shell.new_block_overlay.is_none() {
+        return EventOutcome::Continue;
+    }
+
+    match key.code {
+        KeyCode::Esc => {
+            app.shell.new_block_overlay = None;
+        }
+        KeyCode::Tab => {
+            let overlay = app.shell.new_block_overlay.as_mut().unwrap();
+            overlay.focus = match overlay.focus {
+                NewBlockFocus::Name => NewBlockFocus::Description,
+                NewBlockFocus::Description => NewBlockFocus::Position,
+                NewBlockFocus::Position => NewBlockFocus::Name,
+            };
+        }
+        KeyCode::Enter => {
+            let overlay = app.shell.new_block_overlay.take().unwrap();
+            let name = overlay.name.trim().to_string();
+            if name.is_empty() {
+                app.shell.new_block_overlay = Some(overlay);
+                app.status_message = Some("Block name cannot be empty".to_string());
+                return EventOutcome::Continue;
+            }
+            let after_block = overlay.position_items
+                .get(overlay.position_cursor)
+                .and_then(|p| p.after_block.clone());
+            return EventOutcome::CreateBlock {
+                name,
+                description: overlay.description.trim().to_string(),
+                after_block,
+            };
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            let overlay = app.shell.new_block_overlay.as_mut().unwrap();
+            if overlay.focus == NewBlockFocus::Position && overlay.position_cursor > 0 {
+                overlay.position_cursor -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            let overlay = app.shell.new_block_overlay.as_mut().unwrap();
+            if overlay.focus == NewBlockFocus::Position {
+                let max = overlay.position_items.len().saturating_sub(1);
+                if overlay.position_cursor < max {
+                    overlay.position_cursor += 1;
+                }
+            }
+        }
+        KeyCode::Backspace => {
+            let overlay = app.shell.new_block_overlay.as_mut().unwrap();
+            match overlay.focus {
+                NewBlockFocus::Name => { overlay.name.pop(); }
+                NewBlockFocus::Description => { overlay.description.pop(); }
+                NewBlockFocus::Position => {}
+            }
+        }
+        KeyCode::Char(c) => {
+            let overlay = app.shell.new_block_overlay.as_mut().unwrap();
+            match overlay.focus {
+                NewBlockFocus::Name => overlay.name.push(c),
+                NewBlockFocus::Description => overlay.description.push(c),
+                NewBlockFocus::Position => {}
+            }
+        }
+        _ => {}
+    }
+    EventOutcome::Continue
+}
+
+fn handle_settings_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
+    use crate::tui::app::SettingsTab;
+    let st = &mut app.settings_state;
+
+    if st.editing.is_some() {
+        match key.code {
+            KeyCode::Enter => {
+                st.editing = None;
+                return EventOutcome::SaveSettings;
+            }
+            KeyCode::Esc => {
+                st.editing = None;
+                st.input_buf.clear();
+            }
+            KeyCode::Backspace => { st.input_buf.pop(); }
+            KeyCode::Char(c) => { st.input_buf.push(c); }
+            _ => {}
+        }
+        return EventOutcome::Continue;
+    }
+
+    match key.code {
+        KeyCode::Esc => {
+            app.show_settings = false;
+            return EventOutcome::SaveSettings;
+        }
+        KeyCode::Left => {
+            app.settings_state.tab = app.settings_state.tab.prev();
+            app.settings_state.cursor = 0;
+        }
+        KeyCode::Right => {
+            app.settings_state.tab = app.settings_state.tab.next();
+            app.settings_state.cursor = 0;
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.settings_state.cursor > 0 {
+                app.settings_state.cursor -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            let max = match app.settings_state.tab {
+                SettingsTab::Shell => 4,
+                SettingsTab::Scan  => 1,
+                SettingsTab::Ui    => 2,
+            };
+            if app.settings_state.cursor < max {
+                app.settings_state.cursor += 1;
+            }
+        }
+        KeyCode::Char(' ') | KeyCode::Enter => {
+            let is_toggle = app.settings_state.tab == SettingsTab::Shell
+                && (app.settings_state.cursor == 3 || app.settings_state.cursor == 4);
+            if is_toggle {
+                return EventOutcome::SaveSettings;
+            } else {
+                app.settings_state.editing = Some(app.settings_state.cursor);
+                return EventOutcome::OpenSettings;
+            }
+        }
+        _ => {}
+    }
+    EventOutcome::Continue
+}
+
 pub fn handle_mouse(mouse: MouseEvent, app: &mut AppState) -> EventOutcome {
     match mouse.kind {
         MouseEventKind::Down(MouseButton::Left) => {
@@ -401,7 +591,8 @@ pub fn handle_mouse(mouse: MouseEvent, app: &mut AppState) -> EventOutcome {
             if app.active_tab == Tab::Shell {
                 for (i, rect) in app.shell.item_rects.iter().enumerate() {
                     if rect.contains(col, row) {
-                        app.shell.cursor = i;
+                        app.shell.cursor = i.min(app.shell_nav_count().saturating_sub(1));
+                        app.shell.detail_expanded = false;
                         return EventOutcome::Continue;
                     }
                 }

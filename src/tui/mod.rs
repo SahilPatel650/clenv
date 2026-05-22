@@ -96,7 +96,7 @@ fn event_loop<B: ratatui::backend::Backend>(
     mut scan_rx: Option<mpsc::Receiver<Vec<Environment>>>,
 ) -> Result<Option<String>> {
     loop {
-        terminal.draw(|f| ui::render(f, app))?;
+        terminal.draw(|f| ui::render(f, app, config))?;
 
         // Poll background scan result without blocking
         if let Some(rx) = &scan_rx {
@@ -115,7 +115,7 @@ fn event_loop<B: ratatui::backend::Backend>(
                         EventOutcome::PrintActivation(cmd) => return Ok(Some(cmd)),
                         EventOutcome::Refresh => {
                             app.status_message = Some("Scanning…".to_string());
-                            terminal.draw(|f| ui::render(f, app))?;
+                            terminal.draw(|f| ui::render(f, app, config))?;
                             let new_envs = scanner::scan(&config.scan);
                             app.envs = new_envs;
                             app.selected = 0;
@@ -380,6 +380,80 @@ fn event_loop<B: ratatui::backend::Backend>(
                                 "Created block '{name}' — add your config in ~/.zshrc"
                             ));
                         }
+                        EventOutcome::OpenSettings => {
+                            let st = &mut app.settings_state;
+                            if let Some(row) = st.editing {
+                                st.input_buf = match st.tab {
+                                    crate::tui::app::SettingsTab::Shell => match row {
+                                        0 => config.modules.zshrc_path.as_deref()
+                                                .map(|p| p.to_string_lossy().into_owned())
+                                                .unwrap_or_default(),
+                                        1 => config.modules.private_dotfiles_repo.clone().unwrap_or_default(),
+                                        2 => config.modules.agent_context_repo.clone().unwrap_or_default(),
+                                        _ => String::new(),
+                                    },
+                                    crate::tui::app::SettingsTab::Scan => match row {
+                                        0 => config.scan.depth_limit.to_string(),
+                                        _ => config.scan.roots.get(row.saturating_sub(1))
+                                                .map(|p| p.to_string_lossy().into_owned())
+                                                .unwrap_or_default(),
+                                    },
+                                    crate::tui::app::SettingsTab::Ui => match row {
+                                        0 => config.ui.default_tab.clone(),
+                                        1 => config.ui.default_sort.clone(),
+                                        2 => config.ui.default_sort_dir.clone(),
+                                        _ => String::new(),
+                                    },
+                                };
+                            }
+                        }
+
+                        EventOutcome::SaveSettings => {
+                            let tab = app.settings_state.tab;
+                            let cursor = app.settings_state.cursor;
+                            let editing = app.settings_state.editing;
+                            let input = app.settings_state.input_buf.trim().to_string();
+
+                            if tab == crate::tui::app::SettingsTab::Shell && editing.is_none() {
+                                match cursor {
+                                    3 => config.ui.auto_detect_after_install = !config.ui.auto_detect_after_install,
+                                    4 => config.modules.watch_zshrc = !config.modules.watch_zshrc,
+                                    _ => {}
+                                }
+                            }
+
+                            if editing.is_some() && !input.is_empty() {
+                                match tab {
+                                    crate::tui::app::SettingsTab::Shell => match cursor {
+                                        0 => config.modules.zshrc_path = Some(std::path::PathBuf::from(&input)),
+                                        1 => config.modules.private_dotfiles_repo = Some(input.clone()),
+                                        2 => config.modules.agent_context_repo = Some(input.clone()),
+                                        _ => {}
+                                    },
+                                    crate::tui::app::SettingsTab::Scan => match cursor {
+                                        0 => { if let Ok(n) = input.parse::<usize>() { config.scan.depth_limit = n; } }
+                                        n => {
+                                            let idx = n.saturating_sub(1);
+                                            if idx < config.scan.roots.len() {
+                                                config.scan.roots[idx] = std::path::PathBuf::from(&input);
+                                            }
+                                        }
+                                    },
+                                    crate::tui::app::SettingsTab::Ui => match cursor {
+                                        0 => config.ui.default_tab = input.clone(),
+                                        1 => config.ui.default_sort = input.clone(),
+                                        2 => config.ui.default_sort_dir = input.clone(),
+                                        _ => {}
+                                    },
+                                }
+                                app.settings_state.input_buf.clear();
+                            }
+
+                            if !app.show_settings {
+                                let _ = crate::config::save(config);
+                            }
+                        }
+
                         EventOutcome::Continue => {}
                     }
 

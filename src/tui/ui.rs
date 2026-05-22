@@ -69,7 +69,7 @@ fn abbreviated_path(path: &Path, home: &Path) -> String {
     }
 }
 
-pub fn render(frame: &mut Frame, app: &mut AppState) {
+pub fn render(frame: &mut Frame, app: &mut AppState, config: &crate::config::Config) {
     let theme = default_theme();
     let area = frame.area();
 
@@ -120,6 +120,9 @@ pub fn render(frame: &mut Frame, app: &mut AppState) {
     }
     if app.show_help {
         render_help_overlay(frame, area, &theme);
+    }
+    if app.show_settings {
+        render_settings_overlay(frame, app, config, area, &theme);
     }
     if app.confirm_delete {
         render_confirm_dialog(frame, app, area, &theme);
@@ -1021,10 +1024,266 @@ fn render_help_overlay(frame: &mut Frame, area: Rect, theme: &Theme) {
         Line::from("  y                 Copy activation to clipboard"),
         Line::from("  r                 Refresh scan"),
         Line::from("  ?                 Toggle this help"),
+        Line::from("  .                 Open settings"),
         Line::from("  q                 Quit"),
     ];
     let block = popup_block(" Help ", theme);
     frame.render_widget(Paragraph::new(help_text).block(block), popup_area);
+}
+
+pub fn render_settings_overlay(frame: &mut Frame, app: &AppState, config: &crate::config::Config, area: Rect, theme: &Theme) {
+    use crate::tui::app::SettingsTab;
+
+    let width = (area.width * 3 / 4).max(60).min(area.width.saturating_sub(4));
+    let height = (area.height * 2 / 3).max(16).min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let popup_area = Rect { x, y, width, height };
+
+    frame.render_widget(Clear, popup_area);
+
+    let block = popup_block(" Settings ", theme);
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    if inner.width < 20 || inner.height < 4 { return; }
+
+    let tab_strip_w: u16 = 10;
+    let tab_area  = Rect { x: inner.x, y: inner.y, width: tab_strip_w, height: inner.height };
+    let content_area = Rect {
+        x: inner.x + tab_strip_w + 1,
+        y: inner.y,
+        width: inner.width.saturating_sub(tab_strip_w + 1),
+        height: inner.height.saturating_sub(1),
+    };
+    let hint_area = Rect {
+        x: inner.x, y: inner.y + inner.height.saturating_sub(1),
+        width: inner.width, height: 1,
+    };
+
+    for row in 0..inner.height {
+        let cell_area = Rect { x: inner.x + tab_strip_w, y: inner.y + row, width: 1, height: 1 };
+        frame.render_widget(
+            Paragraph::new(Span::styled("│", Style::default().fg(theme.muted))),
+            cell_area,
+        );
+    }
+
+    for (i, &tab) in SettingsTab::ALL.iter().enumerate() {
+        let is_active = tab == app.settings_state.tab;
+        let style = if is_active {
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.muted)
+        };
+        let prefix = if is_active { "▌" } else { " " };
+        let label = format!("{}{}", prefix, tab.label());
+        let row_area = Rect { x: tab_area.x, y: tab_area.y + i as u16, width: tab_area.width, height: 1 };
+        frame.render_widget(Paragraph::new(Span::styled(label, style)), row_area);
+    }
+
+    let st = &app.settings_state;
+    match st.tab {
+        SettingsTab::Shell => render_settings_shell(frame, app, config, content_area, theme),
+        SettingsTab::Scan  => render_settings_scan(frame, app, config, content_area, theme),
+        SettingsTab::Ui    => render_settings_ui(frame, app, config, content_area, theme),
+    }
+
+    let hint = if st.editing.is_some() {
+        "[Enter] save   [Esc] cancel edit"
+    } else {
+        "[←→] tab   [↑↓] navigate   [Enter/Space] edit/toggle   [Esc] close & save"
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(hint, Style::default().fg(theme.muted))),
+        hint_area,
+    );
+}
+
+fn settings_row(
+    frame: &mut Frame,
+    label: &str,
+    value: &str,
+    is_selected: bool,
+    is_editing: bool,
+    y: u16,
+    area: Rect,
+    theme: &Theme,
+) {
+    let label_w = 24usize;
+    let label_str = format!("{label:<label_w$}");
+    let value_str = if is_editing { format!("{value}█") } else { value.to_string() };
+    let cursor = if is_selected { "▶" } else { " " };
+    let (label_style, value_style) = if is_selected {
+        (
+            Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD),
+            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+        )
+    } else {
+        (Style::default().fg(theme.muted), Style::default().fg(theme.text))
+    };
+    let spans = vec![
+        Span::raw(format!("{cursor} ")),
+        Span::styled(label_str, label_style),
+        Span::styled(value_str, value_style),
+    ];
+    let row_area = Rect { x: area.x, y, width: area.width, height: 1 };
+    frame.render_widget(Paragraph::new(Line::from(spans)), row_area);
+}
+
+fn settings_toggle_row(
+    frame: &mut Frame,
+    label: &str,
+    value: bool,
+    is_selected: bool,
+    y: u16,
+    area: Rect,
+    theme: &Theme,
+) {
+    let label_w = 24usize;
+    let label_str = format!("{label:<label_w$}");
+    let (toggle_str, toggle_color) = if value { ("[ON ]", theme.ok) } else { ("[OFF]", theme.muted) };
+    let cursor = if is_selected { "▶" } else { " " };
+    let label_style = if is_selected {
+        Style::default().fg(theme.highlight).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.muted)
+    };
+    let spans = vec![
+        Span::raw(format!("{cursor} ")),
+        Span::styled(label_str, label_style),
+        Span::styled(toggle_str, Style::default().fg(toggle_color).add_modifier(Modifier::BOLD)),
+    ];
+    let row_area = Rect { x: area.x, y, width: area.width, height: 1 };
+    frame.render_widget(Paragraph::new(Line::from(spans)), row_area);
+}
+
+fn render_settings_shell(
+    frame: &mut Frame,
+    app: &AppState,
+    config: &crate::config::Config,
+    area: Rect,
+    theme: &Theme,
+) {
+    let st = &app.settings_state;
+    let rows: &[(&str, usize)] = &[
+        ("zshrc path",             0),
+        ("Private dotfiles repo",  1),
+        ("Agent context repo",     2),
+        ("Auto-detect on install", 3),
+        ("Watch zshrc changes",    4),
+    ];
+    for &(label, row_idx) in rows {
+        if row_idx as u16 >= area.height { break; }
+        let is_sel = st.cursor == row_idx;
+        let is_edit = st.editing == Some(row_idx);
+        let y = area.y + row_idx as u16;
+        match row_idx {
+            0 => {
+                let val = config.modules.zshrc_path.as_deref()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "~/.zshrc (default)".to_string());
+                let display = if is_edit { st.input_buf.clone() } else { val };
+                settings_row(frame, label, &display, is_sel, is_edit, y, area, theme);
+            }
+            1 => {
+                let val = config.modules.private_dotfiles_repo.clone()
+                    .unwrap_or_else(|| "not set".to_string());
+                let display = if is_edit { st.input_buf.clone() } else { val };
+                settings_row(frame, label, &display, is_sel, is_edit, y, area, theme);
+            }
+            2 => {
+                let val = config.modules.agent_context_repo.clone()
+                    .unwrap_or_else(|| "not set".to_string());
+                let display = if is_edit { st.input_buf.clone() } else { val };
+                settings_row(frame, label, &display, is_sel, is_edit, y, area, theme);
+            }
+            3 => {
+                settings_toggle_row(frame, label, config.ui.auto_detect_after_install, is_sel, y, area, theme);
+            }
+            4 => {
+                settings_toggle_row(frame, label, config.modules.watch_zshrc, is_sel, y, area, theme);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn render_settings_scan(
+    frame: &mut Frame,
+    app: &AppState,
+    config: &crate::config::Config,
+    area: Rect,
+    theme: &Theme,
+) {
+    let st = &app.settings_state;
+    let depth_val = config.scan.depth_limit.to_string();
+    let is_sel = st.cursor == 0;
+    let is_edit = st.editing == Some(0);
+    let display = if is_edit { st.input_buf.clone() } else { depth_val };
+    settings_row(frame, "Depth limit", &display, is_sel, is_edit, area.y, area, theme);
+
+    let mut y = area.y + 1;
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled("  Scan roots:", Style::default().fg(theme.highlight)))),
+        Rect { x: area.x, y, width: area.width, height: 1 },
+    );
+    y += 1;
+
+    for (i, root) in config.scan.roots.iter().enumerate() {
+        let row_idx = 1 + i;
+        if y >= area.y + area.height { break; }
+        let is_sel = st.cursor == row_idx;
+        let is_edit = st.editing == Some(row_idx);
+        let val = root.to_string_lossy().to_string();
+        let display = if is_edit { st.input_buf.clone() } else { val };
+        settings_row(frame, "", &display, is_sel, is_edit, y, area, theme);
+        y += 1;
+    }
+
+    let add_idx = 1 + config.scan.roots.len();
+    if y < area.y + area.height {
+        let is_sel = st.cursor == add_idx;
+        let style = if is_sel {
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.muted)
+        };
+        let prefix = if is_sel { "▶ " } else { "  " };
+        frame.render_widget(
+            Paragraph::new(Span::styled(format!("{prefix}[+ add root]"), style)),
+            Rect { x: area.x, y, width: area.width, height: 1 },
+        );
+    }
+}
+
+fn render_settings_ui(
+    frame: &mut Frame,
+    app: &AppState,
+    config: &crate::config::Config,
+    area: Rect,
+    theme: &Theme,
+) {
+    let st = &app.settings_state;
+    let rows: &[(&str, usize)] = &[
+        ("Default tab",      0),
+        ("Default sort",     1),
+        ("Default sort dir", 2),
+    ];
+    for &(label, row_idx) in rows {
+        if row_idx as u16 >= area.height { break; }
+        let is_sel = st.cursor == row_idx;
+        let is_edit = st.editing == Some(row_idx);
+        let y = area.y + row_idx as u16;
+        let val = match row_idx {
+            0 => config.ui.default_tab.clone(),
+            1 => config.ui.default_sort.clone(),
+            2 => config.ui.default_sort_dir.clone(),
+            _ => String::new(),
+        };
+        let display = if is_edit { st.input_buf.clone() } else { val };
+        settings_row(frame, label, &display, is_sel, is_edit, y, area, theme);
+    }
 }
 
 fn render_confirm_dialog(frame: &mut Frame, app: &AppState, area: Rect, theme: &Theme) {
