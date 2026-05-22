@@ -4,6 +4,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+pub struct BaseDepsOverlay {
+    pub missing: Vec<String>,
+    pub pending_name: String,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct HitRect {
     pub x: u16,
@@ -159,6 +164,8 @@ pub struct AppState {
     pub onboarding: Option<OnboardingState>,
     pub onboarding_result: Option<OnboardingResult>,
     pub shell: ShellTabState,
+    pub base_deps_overlay: Option<BaseDepsOverlay>,
+    pub base_deps_checked: bool,
 }
 
 impl AppState {
@@ -205,6 +212,8 @@ impl AppState {
             onboarding: None,
             onboarding_result: None,
             shell: ShellTabState::default(),
+            base_deps_overlay: None,
+            base_deps_checked: false,
         }
     }
 
@@ -410,16 +419,40 @@ impl AppState {
 
         let modules = crate::modules::load_builtin_modules();
 
-        self.shell.entries = modules
-            .into_iter()
+        self.shell.entries = modules.iter()
             .map(|module| {
-                let status = crate::modules::detect::module_status(&module, &zshrc_path);
+                let status = crate::modules::detect::module_status(module, &zshrc_path);
                 let enabled = config.enabled.contains(&module.name);
-                crate::modules::ModuleEntry { definition: module, status, enabled }
+                let can_install = crate::modules::detect::has_install_for_platform(module);
+                let missing_deps = crate::modules::detect::missing_deps(module, &modules);
+                crate::modules::ModuleEntry {
+                    definition: module.clone(),
+                    status,
+                    enabled,
+                    can_install,
+                    missing_deps,
+                }
             })
             .collect();
 
-        // Initialize pending_enabled to mirror current enabled state
+        // Sort to match the visual category order in render_shell_tab so that
+        // cursor arithmetic (cursor+1 / cursor-1) moves in the displayed order.
+        const CATEGORY_ORDER: &[&str] = &[
+            "package-managers",
+            "shell-frameworks",
+            "shell-themes",
+            "zsh-plugins",
+            "productivity",
+            "aliases",
+        ];
+        self.shell.entries.sort_by_key(|e| {
+            let rank = CATEGORY_ORDER
+                .iter()
+                .position(|c| *c == e.definition.category.as_str())
+                .unwrap_or(CATEGORY_ORDER.len());
+            (rank, e.definition.name.clone())
+        });
+
         for entry in &self.shell.entries {
             self.shell.pending_enabled.insert(
                 entry.definition.name.clone(),

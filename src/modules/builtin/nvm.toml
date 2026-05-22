@@ -12,8 +12,17 @@ command = "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install
 command = "curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install.sh | bash"
 
 [zshrc]
-# NVM is loaded lazily via the zsh-nvm plugin (NVM_LAZY_LOAD=true set in oh-my-zsh snippet).
-# No direct snippet needed; lazy-load flags are set in the oh-my-zsh module.
-snippet = ""
+snippet = '''
+# nvm — lazy-load to avoid ~300ms startup penalty
+export NVM_DIR="$HOME/.nvm"
+nvm() {
+  unfunction nvm node npm npx 2>/dev/null
+  [ -s "$NVM_DIR/nvm.sh" ] && source "$NVM_DIR/nvm.sh"
+  nvm "$@"
+}
+node() { nvm; node "$@"; }
+npm()  { nvm; npm  "$@"; }
+npx()  { nvm; npx  "$@"; }
+'''
 startup_ms_estimate = 0
 order = 120

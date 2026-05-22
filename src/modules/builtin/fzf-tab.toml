@@ -1,0 +1,18 @@
+name = "fzf-tab"
+description = "Replace Zsh tab-completion menu with fzf"
+category = "zsh-plugins"
+depends_on = ["fzf"]
+
+[detect]
+commands = ['[ -f "$HOME/.zsh/fzf-tab/fzf-tab.plugin.zsh" ]']
+
+[install.linux]
+command = "git clone https://github.com/Aloxaf/fzf-tab ~/.zsh/fzf-tab"
+
+[install.macos]
+command = "git clone https://github.com/Aloxaf/fzf-tab ~/.zsh/fzf-tab"
+
+[zshrc]
+snippet = 'source ~/.zsh/fzf-tab/fzf-tab.plugin.zsh'
+startup_ms_estimate = 5
+order = 41

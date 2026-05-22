@@ -1,18 +1,17 @@
 name = "fast-syntax-highlighting"
 description = "Feature-rich syntax highlighting for Zsh"
 category = "zsh-plugins"
-depends_on = ["oh-my-zsh"]
 
 [detect]
-commands = ['[ -d "${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/fast-syntax-highlighting" ]']
+commands = ['[ -f "$HOME/.zsh/fast-syntax-highlighting/fast-syntax-highlighting.plugin.zsh" ]']
 
 [install.linux]
-command = "git clone https://github.com/zdharma-continuum/fast-syntax-highlighting.git ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/fast-syntax-highlighting"
+command = "git clone https://github.com/zdharma-continuum/fast-syntax-highlighting.git ~/.zsh/fast-syntax-highlighting"
 
 [install.macos]
-command = "git clone https://github.com/zdharma-continuum/fast-syntax-highlighting.git ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/fast-syntax-highlighting"
+command = "git clone https://github.com/zdharma-continuum/fast-syntax-highlighting.git ~/.zsh/fast-syntax-highlighting"
 
 [zshrc]
-# Configured via plugins list in oh-my-zsh snippet
-snippet = ""
+snippet = 'source ~/.zsh/fast-syntax-highlighting/fast-syntax-highlighting.plugin.zsh'
+startup_ms_estimate = 15
 order = 31

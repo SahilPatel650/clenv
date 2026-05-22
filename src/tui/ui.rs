@@ -108,6 +108,9 @@ pub fn render(frame: &mut Frame, app: &mut AppState) {
     if app.confirm_delete {
         render_confirm_dialog(frame, app, area, &theme);
     }
+    if app.base_deps_overlay.is_some() {
+        render_base_deps_overlay(frame, app, area, &theme);
+    }
 }
 
 fn render_tabs(frame: &mut Frame, app: &mut AppState, area: Rect, theme: &Theme) {
@@ -401,12 +404,22 @@ fn render_detail(frame: &mut Frame, app: &AppState, area: Rect, theme: &Theme) {
 }
 
 fn render_status_bar(frame: &mut Frame, app: &AppState, area: Rect, theme: &Theme) {
+    let on_shell = app.active_tab == Tab::Shell;
     let msg = if app.searching {
         Span::styled(
             "[Esc] exit search  [↑↓] navigate  [Backspace] delete char",
             Style::default().fg(theme.highlight),
         )
     } else if let Some(status) = &app.status_message {
+        if on_shell {
+            // Render message + dismiss hint as a line with two spans
+            let line = Line::from(vec![
+                Span::styled(status.as_str(), Style::default().fg(theme.ok)),
+                Span::styled("  [Esc] dismiss", Style::default().fg(theme.muted)),
+            ]);
+            frame.render_widget(Paragraph::new(line), area);
+            return;
+        }
         Span::styled(status.as_str(), Style::default().fg(theme.ok))
     } else if app.rescanning {
         Span::styled(
@@ -420,11 +433,11 @@ fn render_status_bar(frame: &mut Frame, app: &AppState, area: Rect, theme: &Them
         )
     } else if app.active_tab == Tab::Shell {
         Span::raw(
-            "[Space] toggle  [s] save  [a] adopt  [c] AI context  [?] help  [q] quit",
+            "[Enter/Space] install/toggle  [d] disable  [c] AI context  [r] sync  [1] envs  [?] help  [q] quit",
         )
     } else {
         Span::raw(
-            "[d] delete  [c] cache  [a] activate  [y] copy  [r] refresh  [/] search  [⚙] tabs  [?] help  [q] quit",
+            "[d] delete  [c] cache  [a] activate  [y] copy  [r] refresh  [/] search  [2] shell  [?] help  [q] quit",
         )
     };
     frame.render_widget(Paragraph::new(Line::from(msg)), area);
@@ -433,7 +446,6 @@ fn render_status_bar(frame: &mut Frame, app: &AppState, area: Rect, theme: &Them
 fn render_shell_tab(frame: &mut Frame, app: &mut AppState, area: Rect, theme: &Theme) {
     use crate::modules::ModuleStatus;
 
-    // Category display order
     const CATEGORY_ORDER: &[&str] = &[
         "package-managers",
         "shell-frameworks",
@@ -447,14 +459,12 @@ fn render_shell_tab(frame: &mut Frame, app: &mut AppState, area: Rect, theme: &T
         CATEGORY_ORDER.iter().position(|c| *c == cat).unwrap_or(CATEGORY_ORDER.len())
     }
 
-    // Build flat list items: (is_header, category_label | module_index)
     #[derive(Clone)]
     enum ListItem {
         Header(String),
-        Module(usize), // index into app.shell.entries
+        Module(usize),
     }
 
-    // Collect entries grouped by category (stable order: CATEGORY_ORDER first, then unknown)
     let mut categories: Vec<String> = {
         let mut cats: Vec<String> = app.shell.entries
             .iter()
@@ -465,7 +475,6 @@ fn render_shell_tab(frame: &mut Frame, app: &mut AppState, area: Rect, theme: &T
         cats.sort_by_key(|c| (category_rank(c.as_str()), c.clone()));
         cats
     };
-    // deduplicate (BTreeSet already unique, but sort may not preserve insertion)
     categories.dedup();
 
     let mut flat_items: Vec<ListItem> = Vec::new();
@@ -478,7 +487,6 @@ fn render_shell_tab(frame: &mut Frame, app: &mut AppState, area: Rect, theme: &T
         }
     }
 
-    // Count only module items for cursor bounds
     let module_count = app.shell.entries.len();
 
     let block = Block::default().borders(Borders::TOP | Borders::BOTTOM);
@@ -490,23 +498,16 @@ fn render_shell_tab(frame: &mut Frame, app: &mut AppState, area: Rect, theme: &T
     }
 
     let max_visible_rows = inner.height as usize;
-
-    // Map cursor (module index) to flat_items position
-    // scroll_offset tracks flat-list rows, not just modules
-    // Simpler: compute visible flat rows starting at scroll_offset
     let total_flat = flat_items.len();
     let scroll = app.shell.scroll_offset.min(total_flat.saturating_sub(1));
 
     let mut item_rects: Vec<HitRect> = Vec::new();
-    // Resize to module_count slots
     item_rects.resize(module_count, HitRect::default());
 
-    // flat_cursor: position in flat_items of the currently selected module
     let flat_cursor = flat_items.iter().position(|item| {
         matches!(item, ListItem::Module(i) if *i == app.shell.cursor)
     }).unwrap_or(0);
 
-    // Compute which flat rows are visible
     let visible_start = scroll;
     let visible_end = (visible_start + max_visible_rows).min(total_flat);
 
@@ -528,54 +529,64 @@ fn render_shell_tab(frame: &mut Frame, app: &mut AppState, area: Rect, theme: &T
                 let entry = &app.shell.entries[*idx];
                 let name = &entry.definition.name;
                 let desc = &entry.definition.description;
-                let pending = app.shell.pending_enabled.get(name.as_str())
-                    .copied()
-                    .unwrap_or(entry.enabled);
-                let checkbox = if pending { "[✓]" } else { "[ ]" };
-                let status_label = entry.status.label();
-                let status_color = match &entry.status {
-                    ModuleStatus::ManagedActive => theme.ok,
-                    ModuleStatus::InstalledUnmanaged => theme.warn,
-                    ModuleStatus::NotInstalled => theme.muted,
-                    ModuleStatus::ManagedInactive => theme.muted,
-                };
-
                 let is_selected = *idx == app.shell.cursor;
-                let row_style = if is_selected {
-                    Style::default().add_modifier(Modifier::REVERSED)
+                let dep_missing = !entry.missing_deps.is_empty();
+                let unavailable = !entry.can_install
+                    && matches!(entry.status, ModuleStatus::NotInstalled);
+
+                // Visual indicator: ✓ active, ○ inactive, ↓ can install, ⊘ blocked, × unavailable
+                let (indicator, status_label, status_color) = if dep_missing {
+                    ("⊘", "dep missing", theme.muted)
+                } else if unavailable {
+                    ("×", "unavailable", theme.muted)
                 } else {
-                    Style::default()
+                    match &entry.status {
+                        ModuleStatus::ManagedActive => ("✓", "active", theme.ok),
+                        ModuleStatus::ManagedInactive => ("○", "inactive", theme.muted),
+                        ModuleStatus::NotInstalled => ("↓", "not installed", theme.highlight),
+                        ModuleStatus::InstalledUnmanaged => ("○", "inactive", theme.muted),
+                    }
                 };
 
-                // Truncate / pad name and description
-                let name_padded = format!("{:<15}", if name.len() > 15 { &name[..15] } else { name });
-                let desc_str: String = if desc.len() > 35 {
-                    desc[..35].to_string()
+                // Dim blocked/unavailable rows
+                let base_fg = if dep_missing || unavailable {
+                    theme.muted
                 } else {
-                    format!("{:<35}", desc)
+                    theme.text
+                };
+
+                let name_padded = format!("{:<18}", if name.len() > 18 { &name[..18] } else { name });
+                let desc_max = inner.width.saturating_sub(32) as usize;
+                let desc_str: String = if desc.len() > desc_max {
+                    desc[..desc_max].to_string()
+                } else {
+                    format!("{:<width$}", desc, width = desc_max)
                 };
 
                 let row_area = Rect { x: inner.x, y: row_y, width: inner.width, height: 1 };
 
-                // Build spans
-                let mut spans = vec![
-                    Span::styled(format!("   {} ", checkbox), row_style),
-                    Span::styled(name_padded, row_style),
-                    Span::raw("  "),
-                    Span::styled(desc_str, row_style),
-                    Span::raw("  "),
-                ];
-
-                // Status uses color override unless selected (reversed handles bg)
-                if is_selected {
-                    spans.push(Span::styled(status_label, row_style));
+                let spans: Vec<Span> = if is_selected {
+                    vec![
+                        Span::styled(
+                            format!("  [{}] {name_padded}  {desc_str}  {status_label}", indicator),
+                            Style::default().add_modifier(Modifier::REVERSED),
+                        ),
+                    ]
                 } else {
-                    spans.push(Span::styled(status_label, Style::default().fg(status_color)));
-                }
+                    vec![
+                        Span::styled("  [", Style::default().fg(base_fg)),
+                        Span::styled(indicator, Style::default().fg(status_color)),
+                        Span::styled("] ", Style::default().fg(base_fg)),
+                        Span::styled(name_padded, Style::default().fg(base_fg)),
+                        Span::raw("  "),
+                        Span::styled(desc_str, Style::default().fg(base_fg)),
+                        Span::raw("  "),
+                        Span::styled(status_label, Style::default().fg(status_color)),
+                    ]
+                };
 
                 frame.render_widget(Paragraph::new(Line::from(spans)), row_area);
 
-                // Store hit rect
                 item_rects[*idx] = HitRect {
                     x: inner.x,
                     y: row_y,
@@ -590,12 +601,9 @@ fn render_shell_tab(frame: &mut Frame, app: &mut AppState, area: Rect, theme: &T
 
     app.shell.item_rects = item_rects;
 
-    // Auto-scroll to keep cursor visible
-    // If flat_cursor is above visible window, scroll up
     if flat_cursor < app.shell.scroll_offset {
         app.shell.scroll_offset = flat_cursor;
     }
-    // If flat_cursor is below visible window, scroll down
     if flat_cursor >= app.shell.scroll_offset + max_visible_rows {
         app.shell.scroll_offset = flat_cursor + 1 - max_visible_rows;
     }
@@ -620,6 +628,13 @@ fn render_shell_detail(frame: &mut Frame, app: &AppState, area: Rect, theme: &Th
         def.depends_on.join(", ")
     };
     let user_extend = def.zshrc.user_extend.as_deref().unwrap_or("not set");
+    let platform_note = if entry.can_install {
+        "yes"
+    } else if matches!(entry.status, crate::modules::ModuleStatus::NotInstalled) {
+        "no installer for this OS"
+    } else {
+        "—"
+    };
 
     let mut text = vec![
         Line::from(vec![
@@ -631,11 +646,26 @@ fn render_shell_detail(frame: &mut Frame, app: &AppState, area: Rect, theme: &Th
             Span::raw(status_label),
             Span::raw("    "),
             Span::styled("Startup: ", Style::default().fg(theme.highlight)),
-            Span::raw(format!("~{startup_ms}ms")),
+            if startup_ms > 0 {
+                Span::raw(format!("~{startup_ms}ms"))
+            } else {
+                Span::styled("minimal", Style::default().fg(theme.muted))
+            },
         ]),
         Line::from(vec![
             Span::styled("Depends on:   ", Style::default().fg(theme.highlight)),
-            Span::raw(depends),
+            if entry.missing_deps.is_empty() {
+                Span::raw(depends)
+            } else {
+                Span::styled(
+                    format!("{depends}  ⚠ missing: {}", entry.missing_deps.join(", ")),
+                    Style::default().fg(theme.warn),
+                )
+            },
+        ]),
+        Line::from(vec![
+            Span::styled("Installable:  ", Style::default().fg(theme.highlight)),
+            Span::raw(platform_note),
         ]),
         Line::from(vec![
             Span::styled("zshrc order:  ", Style::default().fg(theme.highlight)),
@@ -896,6 +926,57 @@ fn render_confirm_dialog(frame: &mut Frame, app: &AppState, area: Rect, theme: &
         .title(" Confirm Delete ")
         .style(Style::default().bg(theme.popup_bg).fg(theme.danger));
     frame.render_widget(Paragraph::new(text).block(block), popup_area);
+}
+
+fn render_base_deps_overlay(frame: &mut Frame, app: &AppState, area: Rect, theme: &Theme) {
+    let Some(overlay) = &app.base_deps_overlay else { return };
+
+    let popup_area = centered_rect(60, 50, area);
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(Span::styled(
+            " Missing Base Requirements ",
+            Style::default().fg(theme.warn).add_modifier(Modifier::BOLD),
+        ))
+        .border_style(Style::default().fg(theme.warn))
+        .style(Style::default().bg(theme.popup_bg));
+
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let mut lines: Vec<Line> = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "  The following tools are required by install scripts:",
+            Style::default().fg(theme.text),
+        )),
+        Line::from(""),
+    ];
+
+    for dep in &overlay.missing {
+        lines.push(Line::from(vec![
+            Span::styled("    • ", Style::default().fg(theme.warn)),
+            Span::styled(dep.as_str(), Style::default().fg(theme.text).add_modifier(Modifier::BOLD)),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        "  Install them first for best results.",
+        Style::default().fg(theme.muted),
+    )));
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled("  [y] ", Style::default().fg(theme.ok).add_modifier(Modifier::BOLD)),
+        Span::styled("proceed anyway   ", Style::default().fg(theme.text)),
+        Span::styled("[any other key] ", Style::default().fg(theme.muted)),
+        Span::styled("cancel", Style::default().fg(theme.text)),
+    ]));
+
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {

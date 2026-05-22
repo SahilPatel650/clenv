@@ -9,13 +9,29 @@ pub enum EventOutcome {
     PrintActivation(String),
     Refresh,
     DeleteConfirmed,
-    SaveShellModules,
-    AdoptShellModule(String),
+    InstallModule(String),
+    DisableModule(String),
     CopyShellContext,
     SyncPrivateRepo,
 }
 
 pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
+    // Base deps warning intercepts all keys until dismissed
+    if let Some(overlay) = &app.base_deps_overlay {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') => {
+                let name = overlay.pending_name.clone();
+                app.base_deps_overlay = None;
+                app.base_deps_checked = true;
+                return EventOutcome::InstallModule(name);
+            }
+            _ => {
+                app.base_deps_overlay = None;
+            }
+        }
+        return EventOutcome::Continue;
+    }
+
     if app.onboarding.is_some() {
         return handle_onboarding_key(key, app);
     }
@@ -41,34 +57,54 @@ pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
 
     if app.active_tab == Tab::Shell {
         match key.code {
+            KeyCode::Char('1') => {
+                app.active_tab = Tab::All;
+                app.selected = 0;
+                app.scroll_offset = 0;
+            }
             KeyCode::Up | KeyCode::Char('k') => {
                 if app.shell.cursor > 0 {
                     app.shell.cursor -= 1;
                 }
-                app.shell.scroll_offset = app.shell.scroll_offset.min(app.shell.cursor);
+                // scroll_offset is a flat-list index (includes headers); let render handle it
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 if app.shell.cursor + 1 < app.shell.entries.len() {
                     app.shell.cursor += 1;
                 }
-                // clamp scroll: keep cursor visible within visible_rows
-                let visible = app.visible_rows.max(1);
-                if app.shell.cursor >= app.shell.scroll_offset + visible {
-                    app.shell.scroll_offset = app.shell.cursor + 1 - visible;
+                // scroll_offset is a flat-list index (includes headers); let render handle it
+            }
+            KeyCode::Char(' ') | KeyCode::Enter | KeyCode::Char('i') => {
+                if let Some(entry) = app.selected_module() {
+                    if !entry.missing_deps.is_empty() {
+                        let missing = entry.missing_deps.join(", ");
+                        app.status_message = Some(format!("Install deps first: {missing}"));
+                    } else {
+                        match &entry.status {
+                            crate::modules::ModuleStatus::ManagedActive => {
+                                let name = entry.definition.name.clone();
+                                return EventOutcome::DisableModule(name);
+                            }
+                            _ => {
+                                if entry.can_install
+                                    || entry.status != crate::modules::ModuleStatus::NotInstalled
+                                {
+                                    let name = entry.definition.name.clone();
+                                    return EventOutcome::InstallModule(name);
+                                } else {
+                                    app.status_message = Some(
+                                        "No installer available for this platform".to_string(),
+                                    );
+                                }
+                            }
+                        }
+                    }
                 }
             }
-            KeyCode::Char(' ') => {
+            KeyCode::Char('d') => {
                 if let Some(entry) = app.selected_module() {
                     let name = entry.definition.name.clone();
-                    let current = app.shell.pending_enabled.get(&name).copied().unwrap_or(entry.enabled);
-                    app.shell.pending_enabled.insert(name, !current);
-                }
-            }
-            KeyCode::Char('s') => return EventOutcome::SaveShellModules,
-            KeyCode::Char('a') => {
-                if let Some(entry) = app.selected_module() {
-                    let name = entry.definition.name.clone();
-                    return EventOutcome::AdoptShellModule(name);
+                    return EventOutcome::DisableModule(name);
                 }
             }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -76,6 +112,9 @@ pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
             }
             KeyCode::Char('c') => return EventOutcome::CopyShellContext,
             KeyCode::Char('r') => return EventOutcome::SyncPrivateRepo,
+            KeyCode::Esc => {
+                app.status_message = None;
+            }
             KeyCode::Char('?') => {
                 app.show_help = !app.show_help;
             }
@@ -90,6 +129,20 @@ pub fn handle_key(key: KeyEvent, app: &mut AppState) -> EventOutcome {
     match key.code {
         KeyCode::Char('q') => EventOutcome::Quit,
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => EventOutcome::Quit,
+
+        KeyCode::Char('1') => {
+            // Stay on env tabs; if somehow on Shell, jump to All
+            if app.active_tab == Tab::Shell {
+                app.active_tab = Tab::All;
+                app.selected = 0;
+                app.scroll_offset = 0;
+            }
+            EventOutcome::Continue
+        }
+        KeyCode::Char('2') => {
+            app.active_tab = Tab::Shell;
+            EventOutcome::Continue
+        }
 
         KeyCode::Tab => {
             app.next_tab();

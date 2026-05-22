@@ -9,7 +9,7 @@ use crate::config::Config;
 use crate::env::Environment;
 use crate::scanner;
 use anyhow::Result;
-use app::AppState;
+use app::{AppState, BaseDepsOverlay};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event},
     execute,
@@ -39,6 +39,7 @@ pub fn run(
     );
     app.scroll_offset = config.session.last_scroll;
     app.rescanning = rescanning;
+    app.load_shell_modules(&config.modules);
 
     if first_run {
         app.onboarding = Some(onboarding::OnboardingState::new(
@@ -152,52 +153,73 @@ fn event_loop<B: ratatui::backend::Backend>(
                             }
                             app.confirm_delete = false;
                         }
-                        EventOutcome::SaveShellModules => {
-                            let to_enable: Vec<_> = app.shell.entries.iter()
-                                .filter(|e| {
-                                    let pending = app.shell.pending_enabled.get(&e.definition.name).copied().unwrap_or(e.enabled);
-                                    pending && !e.enabled
-                                })
-                                .map(|e| e.definition.clone())
-                                .collect();
+                        EventOutcome::InstallModule(name) => {
+                            // First-install-per-session: warn if base system deps are missing
+                            if !app.base_deps_checked {
+                                let missing: Vec<String> = ["git", "curl", "wget", "zsh"]
+                                    .iter()
+                                    .filter(|dep| {
+                                        std::process::Command::new("which")
+                                            .arg(dep)
+                                            .output()
+                                            .map(|o| !o.status.success())
+                                            .unwrap_or(true)
+                                    })
+                                    .map(|s| s.to_string())
+                                    .collect();
+                                if !missing.is_empty() {
+                                    app.base_deps_overlay = Some(BaseDepsOverlay {
+                                        missing,
+                                        pending_name: name.clone(),
+                                    });
+                                    continue; // don't proceed with install yet
+                                }
+                                app.base_deps_checked = true;
+                            }
 
-                            let to_disable: Vec<_> = app.shell.entries.iter()
-                                .filter(|e| {
-                                    let pending = app.shell.pending_enabled.get(&e.definition.name).copied().unwrap_or(e.enabled);
-                                    !pending && e.enabled
-                                })
-                                .map(|e| e.definition.clone())
-                                .collect();
+                            let zshrc_path = config.modules.zshrc_path.clone()
+                                .unwrap_or_else(|| app.home_dir.join(".zshrc"));
 
-                            if to_enable.is_empty() && to_disable.is_empty() {
-                                app.status_message = Some("No changes to save".to_string());
-                            } else {
-                                let zshrc_path = config.modules.zshrc_path.clone()
-                                    .unwrap_or_else(|| app.home_dir.join(".zshrc"));
+                            if let Some(entry) = app.shell.entries.iter().find(|e| e.definition.name == name).cloned() {
+                                let module = entry.definition.clone();
+                                let needs_install = matches!(entry.status, crate::modules::ModuleStatus::NotInstalled);
+                                let mut ready_to_enable = !needs_install;
 
-                                for module in &to_enable {
-                                    let needs_install = matches!(
-                                        crate::modules::detect::module_status(module, &zshrc_path),
-                                        crate::modules::ModuleStatus::NotInstalled
-                                    );
-
-                                    if needs_install {
-                                        if let Some(cmd) = crate::modules::installer::install_preview(module) {
+                                if needs_install {
+                                    match crate::modules::installer::install_preview(&module) {
+                                        Some(cmd) => {
+                                            // Suspend TUI — install scripts need a real terminal
+                                            // (sudo prompts, interactive wizards, etc.)
                                             let _ = disable_raw_mode();
                                             let mut stdout = io::stdout();
                                             let _ = execute!(stdout, LeaveAlternateScreen, DisableMouseCapture);
                                             let _ = terminal.show_cursor();
-                                            println!("\r\n  Installing {}: {}\r\n", module.name, cmd);
 
-                                            let status = std::process::Command::new("sh")
+                                            println!("\r\n  Installing {}…\r\n", module.name);
+                                            println!("  $ {}\r\n", cmd);
+
+                                            let exit_status = std::process::Command::new("sh")
                                                 .arg("-c")
                                                 .arg(&cmd)
                                                 .status();
 
-                                            match status {
-                                                Ok(s) if s.success() => println!("\r\n  ✓ {} installed\r\n", module.name),
-                                                Ok(s) => println!("\r\n  ✗ {} install failed (exit {})\r\n", module.name, s),
-                                                Err(e) => println!("\r\n  ✗ {} install error: {}\r\n", module.name, e),
+                                            let detected = crate::modules::detect::is_installed(&module);
+
+                                            match (&exit_status, detected) {
+                                                (Ok(s), true) if s.success() => {
+                                                    println!("\r\n  ✓ {} installed and detected\r\n", module.name);
+                                                    ready_to_enable = true;
+                                                }
+                                                (Ok(s), false) if s.success() => {
+                                                    println!("\r\n  ⚠ {} script succeeded — reload shell to activate\r\n", module.name);
+                                                    ready_to_enable = true;
+                                                }
+                                                (Ok(s), _) => {
+                                                    println!("\r\n  ✗ {} install failed (exit {})\r\n", module.name, s);
+                                                }
+                                                (Err(e), _) => {
+                                                    println!("\r\n  ✗ {} install error: {e}\r\n", module.name);
+                                                }
                                             }
 
                                             println!("  Press any key to return…\r");
@@ -211,46 +233,35 @@ fn event_loop<B: ratatui::backend::Backend>(
                                             let _ = execute!(stdout, EnterAlternateScreen, EnableMouseCapture);
                                             terminal.clear()?;
                                         }
+                                        None => {
+                                            app.status_message = Some(format!("No installer for {name} on this platform"));
+                                        }
                                     }
+                                }
 
+                                if ready_to_enable {
                                     if !module.zshrc.snippet.is_empty() {
                                         let _ = crate::modules::zshrc::write_block(&zshrc_path, &module.name, &module.zshrc.snippet);
                                     }
                                     if !config.modules.enabled.contains(&module.name) {
                                         config.modules.enabled.push(module.name.clone());
                                     }
+                                    let _ = crate::config::save(config);
+                                    app.status_message = Some(format!("✓ {name} enabled — reload your shell"));
+                                } else {
+                                    app.status_message = Some(format!("✗ {name} install failed"));
                                 }
-
-                                for module in &to_disable {
-                                    let _ = crate::modules::zshrc::remove_block(&zshrc_path, &module.name);
-                                    config.modules.enabled.retain(|n| n != &module.name);
-                                }
-
-                                let _ = crate::config::save(config);
                                 app.load_shell_modules(&config.modules);
-
-                                let n = to_enable.len() + to_disable.len();
-                                app.status_message = Some(format!("{n} shell module(s) updated — reload your shell"));
                             }
                         }
-                        EventOutcome::AdoptShellModule(name) => {
+                        EventOutcome::DisableModule(name) => {
                             let zshrc_path = config.modules.zshrc_path.clone()
                                 .unwrap_or_else(|| app.home_dir.join(".zshrc"));
-
-                            if let Some(entry) = app.shell.entries.iter().find(|e| e.definition.name == name) {
-                                let module = entry.definition.clone();
-                                match crate::modules::zshrc::write_block(&zshrc_path, &module.name, &module.zshrc.snippet) {
-                                    Ok(_) => {
-                                        if !config.modules.enabled.contains(&module.name) {
-                                            config.modules.enabled.push(module.name.clone());
-                                        }
-                                        let _ = crate::config::save(config);
-                                        app.load_shell_modules(&config.modules);
-                                        app.status_message = Some(format!("Adopted {} — reload your shell", name));
-                                    }
-                                    Err(e) => app.status_message = Some(format!("Adopt failed: {e}")),
-                                }
-                            }
+                            let _ = crate::modules::zshrc::remove_block(&zshrc_path, &name);
+                            config.modules.enabled.retain(|n| n != &name);
+                            let _ = crate::config::save(config);
+                            app.load_shell_modules(&config.modules);
+                            app.status_message = Some(format!("✓ {name} disabled — reload your shell"));
                         }
                         EventOutcome::CopyShellContext => {
                             let mut ctx = String::new();

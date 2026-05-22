@@ -74,6 +74,10 @@ pub struct ModuleEntry {
     pub definition: Module,
     pub status: ModuleStatus,
     pub enabled: bool,
+    /// Has an install command for the current platform.
+    pub can_install: bool,
+    /// Names of `depends_on` modules that are not currently installed.
+    pub missing_deps: Vec<String>,
 }
 
 /// Load all built-in modules. Returns them sorted by zshrc.order.
@@ -81,11 +85,11 @@ pub struct ModuleEntry {
 pub fn load_builtin_modules() -> Vec<Module> {
     let raw: &[(&str, &str)] = &[
         ("homebrew-linux", include_str!("builtin/homebrew-linux.toml")),
-        ("oh-my-zsh", include_str!("builtin/oh-my-zsh.toml")),
         ("powerlevel10k", include_str!("builtin/powerlevel10k.toml")),
         ("zsh-autosuggestions", include_str!("builtin/zsh-autosuggestions.toml")),
         ("fast-syntax-highlighting", include_str!("builtin/fast-syntax-highlighting.toml")),
         ("fzf", include_str!("builtin/fzf.toml")),
+        ("fzf-tab", include_str!("builtin/fzf-tab.toml")),
         ("mamba", include_str!("builtin/mamba.toml")),
         ("conda-aliases", include_str!("builtin/conda-aliases.toml")),
         ("uv", include_str!("builtin/uv.toml")),
