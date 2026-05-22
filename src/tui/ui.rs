@@ -139,6 +139,9 @@ pub fn render(frame: &mut Frame, app: &mut AppState, config: &crate::config::Con
     if app.shell.new_block_overlay.is_some() {
         render_new_block_overlay(frame, app, area, &theme);
     }
+    if app.zshrc_change_modal.is_some() {
+        render_zshrc_change_modal(frame, app, area, &theme);
+    }
 }
 
 fn render_tabs(frame: &mut Frame, app: &mut AppState, area: Rect, theme: &Theme) {
@@ -1614,6 +1617,101 @@ fn render_new_block_overlay(frame: &mut Frame, app: &AppState, area: Rect, theme
             hint_area,
         );
     }
+}
+
+pub fn render_zshrc_change_modal(frame: &mut Frame, app: &AppState, area: Rect, theme: &Theme) {
+    let Some(modal) = &app.zshrc_change_modal else { return };
+
+    let width = (area.width * 4 / 5).min(100).max(60);
+    let height = 14u16.min(area.height.saturating_sub(4));
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let popup_area = Rect { x, y, width, height };
+
+    frame.render_widget(Clear, popup_area);
+
+    let title = modal.block.name.as_deref()
+        .map(|n| format!(" \u{26a0} ~/.zshrc changed \u{2014} {n} "))
+        .unwrap_or_else(|| " \u{26a0} ~/.zshrc changed \u{2014} unmanaged block ".to_string());
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(Span::styled(title, Style::default().fg(theme.warn).add_modifier(Modifier::BOLD)))
+        .style(Style::default().bg(theme.popup_bg).fg(theme.text));
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    if inner.height < 4 { return; }
+
+    let header = Line::from(Span::styled(
+        "New content detected. Choose which version to keep:",
+        Style::default().fg(theme.text),
+    ));
+    frame.render_widget(Paragraph::new(header), Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 });
+
+    let col_w = (inner.width.saturating_sub(2)) / 3;
+
+    let columns: [(u8, &str, Option<&str>); 3] = [
+        (1, "[1] Install script", Some(modal.block.new_content.as_str())),
+        (2, "[2] clenv canonical", modal.block.canonical_content.as_deref()),
+        (3, "[3] My custom config", modal.block.custom_content.as_deref()),
+    ];
+
+    for (i, (choice, label, content_opt)) in columns.iter().enumerate() {
+        let col_x = inner.x + (col_w + 1) * i as u16;
+        let is_selected = modal.selected == *choice;
+        let border_color = if is_selected { theme.accent } else { theme.muted };
+
+        let col_area = Rect { x: col_x, y: inner.y + 1, width: col_w, height: inner.height.saturating_sub(2) };
+        let col_block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .title(Span::styled(*label, Style::default().fg(border_color).add_modifier(Modifier::BOLD)))
+            .style(Style::default().bg(theme.popup_bg));
+        let col_inner = col_block.inner(col_area);
+        frame.render_widget(col_block, col_area);
+
+        if let Some(content) = content_opt {
+            if !content.is_empty() {
+                let max_w = col_inner.width as usize;
+                let lines: Vec<Line> = content.lines()
+                    .take(col_inner.height as usize)
+                    .map(|l| {
+                        let char_count = l.chars().count();
+                        let truncated = if char_count > max_w && max_w > 0 {
+                            let mut s: String = l.chars().take(max_w.saturating_sub(1)).collect();
+                            s.push('\u{2026}');
+                            s
+                        } else {
+                            l.to_string()
+                        };
+                        Line::from(Span::styled(truncated, Style::default().fg(theme.muted)))
+                    })
+                    .collect();
+                frame.render_widget(Paragraph::new(lines), col_inner);
+            } else {
+                frame.render_widget(
+                    Paragraph::new(Span::styled("(no content)", Style::default().fg(theme.muted))),
+                    col_inner,
+                );
+            }
+        } else {
+            frame.render_widget(
+                Paragraph::new(Span::styled("\u{2014} not configured \u{2014}", Style::default().fg(theme.muted))),
+                col_inner,
+            );
+        }
+    }
+
+    let hint_y = inner.y + inner.height.saturating_sub(1);
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            "  Press 1, 2, or 3 to choose   Esc skip (keep file as-is)",
+            Style::default().fg(theme.muted),
+        )),
+        Rect { x: inner.x, y: hint_y, width: inner.width, height: 1 },
+    );
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
