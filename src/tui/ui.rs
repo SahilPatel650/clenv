@@ -704,13 +704,14 @@ fn render_shell_detail(frame: &mut Frame, app: &AppState, area: Rect, theme: &Th
         ];
         if app.shell.detail_expanded {
             lines.push(Line::from(""));
-            for content_line in ub.content.lines().take((inner.height as usize).saturating_sub(2)) {
+            let avail = (inner.height as usize).saturating_sub(2);
+            for content_line in ub.content.lines().take(avail) {
                 lines.push(Line::from(Span::styled(
                     format!("  {content_line}"),
                     Style::default().fg(theme.muted),
                 )));
             }
-            if ub.content.lines().count() > (inner.height as usize).saturating_sub(2) {
+            if ub.content.lines().count() > avail {
                 lines.push(Line::from(Span::styled(
                     "  ...",
                     Style::default().fg(theme.muted),
