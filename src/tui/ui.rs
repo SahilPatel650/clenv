@@ -850,7 +850,10 @@ fn render_shell_tab(frame: &mut Frame, app: &mut AppState, area: Rect, theme: &T
                 let name_w = 18usize;
                 let name_str = if name.len() > name_w { &name[..name_w] } else { name };
                 let name_padded = format!("{name_str:<name_w$}");
-                let desc_max = inner.width.saturating_sub(38) as usize;
+                // Layout: "  [X] {name:18}  {desc}  {status}  ▶"
+                //          3 + 1 + 2 + 18 + 2 + desc + 2 + status + 2 + 1 = 31 + status.len()
+                let overhead = (31 + status_label.len()) as u16;
+                let desc_max = inner.width.saturating_sub(overhead) as usize;
                 let desc_str = if desc.len() > desc_max {
                     desc[..desc_max].to_string()
                 } else {
