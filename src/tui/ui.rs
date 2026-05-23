@@ -507,98 +507,167 @@ fn render_shell_subtab_bar(frame: &mut Frame, app: &AppState, area: Rect, theme:
 }
 
 fn render_shell_fileorder(frame: &mut Frame, app: &mut AppState, area: Rect, theme: &Theme) {
-    use crate::modules::zshrc::{parse_segments, SegmentKind};
+    use crate::modules::zshrc::{parse_segments, segment_line_ranges, SegmentKind};
 
     let zshrc_path = app.home_dir.join(".zshrc");
     let segments = parse_segments(&zshrc_path);
+    let line_ranges = segment_line_ranges(&zshrc_path);
 
-    let block = Block::default().borders(Borders::TOP | Borders::BOTTOM);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    let zshrc_lines: Vec<String> = std::fs::read_to_string(&zshrc_path)
+        .unwrap_or_default()
+        .lines()
+        .map(|l| l.to_string())
+        .collect();
+    let total_file_lines = zshrc_lines.len();
 
-    if inner.height == 0 { return; }
+    // Split horizontally: 40 % block list | 60 % code view
+    let h_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .split(area);
+
+    // ── LEFT: Block list ────────────────────────────────────────────────────
+    let left_block = Block::default()
+        .borders(Borders::TOP | Borders::BOTTOM | Borders::RIGHT);
+    let left_inner = left_block.inner(h_chunks[0]);
+    frame.render_widget(left_block, h_chunks[0]);
 
     let total = segments.len();
     let cursor = app.shell.fileorder_cursor.min(total.saturating_sub(1));
     let moving = app.shell.moving_block;
 
-    // Clamp scroll
-    if cursor < app.shell.scroll_offset {
-        app.shell.scroll_offset = cursor;
-    }
-    if cursor >= app.shell.scroll_offset + inner.height as usize {
-        app.shell.scroll_offset = cursor + 1 - inner.height as usize;
-    }
-    let scroll = app.shell.scroll_offset;
+    if left_inner.height > 0 {
+        // Clamp scroll
+        if cursor < app.shell.scroll_offset {
+            app.shell.scroll_offset = cursor;
+        }
+        if cursor >= app.shell.scroll_offset + left_inner.height as usize {
+            app.shell.scroll_offset = cursor + 1 - left_inner.height as usize;
+        }
+        let scroll = app.shell.scroll_offset;
+        let mut row_y = left_inner.y;
+        let drop_before = if moving.is_some() { Some(cursor) } else { None };
 
-    let mut row_y = inner.y;
+        for (seg_idx, seg) in segments.iter().enumerate() {
+            if row_y >= left_inner.y + left_inner.height { break; }
 
-    let drop_before = if moving.is_some() { Some(cursor) } else { None };
-
-    for (seg_idx, seg) in segments.iter().enumerate() {
-        if row_y >= inner.y + inner.height { break; }
-
-        // Drop zone above this segment when in move mode
-        if let Some(target) = drop_before {
-            if seg_idx == target && seg_idx != moving.unwrap_or(usize::MAX) {
-                if seg_idx >= scroll {
-                    let dz_area = Rect { x: inner.x, y: row_y, width: inner.width, height: 1 };
+            if let Some(target) = drop_before {
+                if seg_idx == target && seg_idx != moving.unwrap_or(usize::MAX) && seg_idx >= scroll {
+                    let dz = Rect { x: left_inner.x, y: row_y, width: left_inner.width, height: 1 };
                     frame.render_widget(
-                        Paragraph::new(Span::styled(
-                            "  ── drop here ──",
-                            Style::default().fg(theme.accent),
-                        )),
-                        dz_area,
+                        Paragraph::new(Span::styled("  ── drop here ──", Style::default().fg(theme.accent))),
+                        dz,
                     );
                     row_y += 1;
                 }
             }
+
+            if seg_idx < scroll { continue; }
+            if row_y >= left_inner.y + left_inner.height { break; }
+
+            let is_cursor = seg_idx == cursor;
+            let is_moving = moving == Some(seg_idx);
+
+            let (indicator, name, extra) = match &seg.kind {
+                SegmentKind::Clenv(name) => {
+                    let status = app.shell.entries.iter()
+                        .find(|e| &e.definition.name == name)
+                        .map(|e| e.status.label())
+                        .unwrap_or("custom");
+                    ("✓", name.as_str(), status.to_string())
+                }
+                SegmentKind::Unmanaged => {
+                    let lines = seg.content.lines().count();
+                    ("~", "unmanaged", format!("{lines} lines"))
+                }
+            };
+
+            let style = if is_moving {
+                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
+            } else if is_cursor {
+                Style::default().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::default().fg(theme.text)
+            };
+
+            let prefix = if is_moving { "▶▶" } else { "  " };
+            let display = format!("{prefix} #{seg_idx:<2} [{indicator}] {name:<18} {extra}");
+            let row_area = Rect { x: left_inner.x, y: row_y, width: left_inner.width, height: 1 };
+            frame.render_widget(Paragraph::new(Span::styled(display, style)), row_area);
+            row_y += 1;
         }
 
-        if seg_idx < scroll { continue; }
-        if row_y >= inner.y + inner.height { break; }
-
-        let is_cursor = seg_idx == cursor;
-        let is_moving = moving == Some(seg_idx);
-
-        let (indicator, name, extra) = match &seg.kind {
-            SegmentKind::Clenv(name) => {
-                let status = app.shell.entries.iter()
-                    .find(|e| &e.definition.name == name)
-                    .map(|e| e.status.label())
-                    .unwrap_or("custom");
-                ("✓", name.as_str(), status.to_string())
+        if let Some(target) = drop_before {
+            if target == total && row_y < left_inner.y + left_inner.height {
+                let dz = Rect { x: left_inner.x, y: row_y, width: left_inner.width, height: 1 };
+                frame.render_widget(
+                    Paragraph::new(Span::styled("  ── drop here (end) ──", Style::default().fg(theme.accent))),
+                    dz,
+                );
             }
-            SegmentKind::Unmanaged => {
-                let lines = seg.content.lines().count();
-                ("~", "unmanaged", format!("{lines} lines"))
-            }
-        };
-
-        let style = if is_moving {
-            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
-        } else if is_cursor {
-            Style::default().add_modifier(Modifier::REVERSED)
-        } else {
-            Style::default().fg(theme.text)
-        };
-
-        let prefix = if is_moving { "▶▶" } else { "  " };
-        let display = format!("{prefix} #{seg_idx:<2} [{indicator}] {name:<22} {extra}");
-
-        let row_area = Rect { x: inner.x, y: row_y, width: inner.width, height: 1 };
-        frame.render_widget(Paragraph::new(Span::styled(display, style)), row_area);
-        row_y += 1;
+        }
     }
 
-    // Drop zone at end (after all segments)
-    if let Some(target) = drop_before {
-        if target == total && row_y < inner.y + inner.height {
-            let dz_area = Rect { x: inner.x, y: row_y, width: inner.width, height: 1 };
+    // ── RIGHT: Code view ────────────────────────────────────────────────────
+    let hl_range: Option<(usize, usize)> = line_ranges.get(cursor).copied();
+
+    // Auto-scroll: center the highlighted range vertically
+    let view_h = h_chunks[1].height.saturating_sub(2) as usize; // minus top/bottom border
+    let code_scroll: usize = if let Some((hl_start, hl_end)) = hl_range {
+        // midpoint of the block, 0-indexed
+        let mid = ((hl_start + hl_end) / 2).saturating_sub(1);
+        mid.saturating_sub(view_h / 2)
+    } else {
+        0
+    };
+    let code_scroll = code_scroll.min(total_file_lines.saturating_sub(1));
+
+    let right_title = format!(" ~/.zshrc ({total_file_lines} lines) ");
+    let right_block = Block::default()
+        .borders(Borders::TOP | Borders::BOTTOM)
+        .title(Span::styled(right_title, Style::default().fg(theme.muted)));
+    let right_inner = right_block.inner(h_chunks[1]);
+    frame.render_widget(right_block, h_chunks[1]);
+
+    if right_inner.height > 0 {
+        if zshrc_lines.is_empty() {
             frame.render_widget(
-                Paragraph::new(Span::styled("  ── drop here (end) ──", Style::default().fg(theme.accent))),
-                dz_area,
+                Paragraph::new(Span::styled("  ~/.zshrc not found", Style::default().fg(theme.muted))),
+                right_inner,
             );
+        } else {
+            let ln_width = format!("{}", total_file_lines).len().max(2);
+            for display_row in 0..right_inner.height as usize {
+                let file_idx = code_scroll + display_row;
+                if file_idx >= zshrc_lines.len() { break; }
+                let line_num = file_idx + 1; // 1-indexed
+                let content = &zshrc_lines[file_idx];
+                let highlighted = hl_range.map(|(s, e)| line_num >= s && line_num <= e).unwrap_or(false);
+
+                let (ln_style, sep_style, content_style) = if highlighted {
+                    (
+                        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+                        Style::default().fg(theme.accent),
+                        Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    let s = Style::default().fg(theme.muted);
+                    (s, s, s)
+                };
+
+                let row_area = Rect {
+                    x: right_inner.x,
+                    y: right_inner.y + display_row as u16,
+                    width: right_inner.width,
+                    height: 1,
+                };
+                let line_text = Line::from(vec![
+                    Span::styled(format!("{:>ln_width$}", line_num), ln_style),
+                    Span::styled(" │ ", sep_style),
+                    Span::styled(content.as_str(), content_style),
+                ]);
+                frame.render_widget(Paragraph::new(line_text), row_area);
+            }
         }
     }
 }

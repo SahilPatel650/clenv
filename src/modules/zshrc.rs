@@ -77,6 +77,64 @@ pub fn parse_segments(zshrc_path: &Path) -> Vec<ZshrcSegment> {
     segments
 }
 
+/// Returns `(start_line, end_line)` pairs (1-indexed, inclusive) for each segment
+/// produced by [`parse_segments`]. Index `i` in the returned vec corresponds to
+/// `segments[i]` from that function, so both vecs are always the same length.
+///
+/// For Clenv segments the range spans the open marker through the close marker.
+/// For Unmanaged segments it covers all non-empty lines in the region.
+pub fn segment_line_ranges(path: &Path) -> Vec<(usize, usize)> {
+    let Ok(contents) = fs::read_to_string(path) else {
+        return vec![];
+    };
+    let pfx = header_prefix();
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+
+    // Pending unmanaged region state (0 = no region open yet)
+    let mut um_start: usize = 0;
+    let mut um_end: usize = 0;
+    let mut um_has_content = false;
+
+    let mut in_block: Option<(String, usize)> = None; // (module-name, start-line)
+    let mut line_num: usize = 1;
+
+    for line in contents.lines() {
+        if let Some((ref name, block_start)) = in_block.clone() {
+            if line == close_marker(name) {
+                // Flush any pending unmanaged that preceded this block
+                if um_has_content {
+                    ranges.push((um_start, um_end));
+                }
+                um_start = 0;
+                um_end = 0;
+                um_has_content = false;
+                ranges.push((block_start, line_num));
+                in_block = None;
+            }
+            // Lines inside a block don't affect the unmanaged region
+        } else if let Some(name) = try_parse_open_marker(line) {
+            in_block = Some((name, line_num));
+        } else {
+            // Unmanaged or header-prefix line — extend the pending unmanaged region
+            if um_start == 0 {
+                um_start = line_num;
+            }
+            um_end = line_num;
+            if !line.trim_start().starts_with(pfx) && !line.trim().is_empty() {
+                um_has_content = true;
+            }
+        }
+        line_num += 1;
+    }
+
+    // Flush any trailing unmanaged content
+    if um_has_content {
+        ranges.push((um_start, um_end));
+    }
+
+    ranges
+}
+
 /// Extract module name from an open marker line (handles old and new format).
 fn try_parse_open_marker(line: &str) -> Option<String> {
     // Matches "# [clenv: <name>]" optionally followed by more text (old format had " — managed…")
